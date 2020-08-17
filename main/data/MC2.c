@@ -485,7 +485,6 @@ static void MC_Manage_Task_2(void)
 							timer_stop_2(250);
 							timer_start_2(500);//控制灯闪烁
 							timer_start_2(1000);//启动电量累计功能
-
 							Globa_2->SYS_Step = 0x11;
 							Globa_2->MC_Step  = 0x01;
 						}
@@ -513,16 +512,19 @@ static void MC_Manage_Task_2(void)
 							Globa_2->Time += 1;
 							timer_start_2(1000);
 						}
-
-						if(timer_tick_2(500) == 1){  //定时500MS
-							timer_start_2(500);
-							
-							if(Globa_2->led_run_flag != 0){//点亮（灯闪烁）
-								GROUP2_RUN_LED_ON;
-							}else{
-								GROUP2_RUN_LED_OFF;
+						
+            if(Globa_1->Charger_param.LED_Type_Config == 3)
+						{
+							if(timer_tick_2(500) == 1){  //定时500MS
+								timer_start_2(500);
+								
+								if(Globa_2->led_run_flag != 0){//点亮（灯闪烁）
+									GROUP2_RUN_LED_ON;
+								}else{
+									GROUP2_RUN_LED_OFF;
+								}
 							}
-						}
+					  }
 
 						MC_control_2(fd);//充电应用逻辑控制（包括与控制器的通信、刷卡计费的处理、上层系统故障的处理）
 

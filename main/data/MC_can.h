@@ -56,6 +56,11 @@
 #define  PGN3584_ID_MC 0x180EF68A   //电子锁控制        3584	000E00H	6	8	BIN	250	计费单元--控制器
 #define  PGN3840_ID_CM 0x180F8AF6   //电子锁控制反馈    3840	000F00H	6	8	BIN	250	控制器--计费单元
 
+//---------------------------------功率控制------------------------------------------------------
+#define  PGN3840_ID_MC 0x100FF68A    //功率调节帧	      3840	001100H	4	8	BIN	250	计费单元--控制器
+#define  PGN4096_ID_CM 0x10108AF6   //功率调节帧应答帧	4096	001200H	4	8	BIN	250	控制器--计费单元
+
+
 //--------------------------- 2 状态帧  ----------------------------------------   
 #define  PGN4352_ID_CM 0x10118AF6   //启动完成帧	    4352	001100H	4	不定	BIN	250	控制器--计费单元
 #define  PGN4608_ID_MC 0x1012F68A   //启动完成应答帧	4608	001200H	4	8	BIN	250	计费单元--控制器
@@ -216,7 +221,7 @@ typedef struct _MC_PGN2304_FRAME
 	UINT8 Charging_gun_type;       //充电枪类型
   UINT8 gun_allowed_temp;        //充电枪最高允许温度
 	UINT8 Input_Relay_Ctl_Type; 
-	UINT8 LED_Type_Keep;         //灯板控制高4位为灯板控制方式0-有监控屏1-由下面控制
+	UINT8 LED_Type_Keep;         //灯板控制高4位为灯板控制方式0-有监控屏1-控制板接入，各接入一个2-双枪控制灯板由1号机器进行控制 3-无灯板控制由原来的圆灯控制
 	UINT8 Charge_min_voltage[2]; //充电模块最低电压
 	CHARGER_SHILELD_ALARM_MC charger_shileld_alarm_value;
 }MC_PGN2304_FRAME;
@@ -251,6 +256,26 @@ typedef struct _MC_PGN3328_FRAME
 	UINT8   ok;      //成功标识	BIN	1Byte	0成功；1失败。
 	UINT8   FF[6];   //保留字节，补足8字节
 }MC_PGN3328_FRAME;
+
+//---------------------------------功率控制------------------------------------------------------
+typedef struct _Power_PGN3840_FRAME
+{                                       
+	UINT8   gun;                //充电接口标识	BIN	1Byte	一桩（机）多充时用来标记接口号。一桩（机）一充时此项为0，多个接口时顺序对每个接口进行编号，范围1-255。
+	UINT8   Power_Adjust_Command;  //功率调节指令类型:绝对值和百分比两种 01H：功率绝对值，输出值=功率调节参数值 02 百分比 输出值= 最大输出功率*百分比     
+	UINT8   Power_Adjust_data[2];// 01H：绝对值，数据分辨类：0.1KW/位 偏移量：-1000.kw：数据范围 -1000.0kw ~ 1000.0kw（正表示充电，负是放电）02：百分比%1为。0-100%
+	UINT8   FF[4];   //保留字节，补足8字节
+}Power_PGN3840_FRAME;
+
+//直流分流器参数发送响应帧
+typedef struct _Power_PGN4096_FRAME
+{                                       
+	UINT8   gun;                //充电接口标识	BIN	1Byte	一桩（机）多充时用来标记接口号。一桩（机）一充时此项为0，多个接口时顺序对每个接口进行编号，范围1-255。
+	UINT8   Power_Adjust_Command;  //功率调节指令类型:绝对值和百分比两种 01H：功率绝对值，输出值=功率调节参数值 02 百分比 输出值= 最大输出功率*百分比     
+	UINT8   Power_Adjust_data[2];// 01H：绝对值，数据分辨类：0.1KW/位 偏移量：-1000.kw：数据范围 -1000.0kw ~ 1000.0kw（正表示充电，负是放电）02：百分比%1为。0-100%
+	UINT8   Ok;
+  UINT8   failure_cause;//停止充电原因	BIN	2Byte	低字节：停止的具体原因，见附录D1；高字节：停止的系统原因，如下：0xE1：计费控制单元控制停止充电。0xE2：充电控制器判定充电机故障，充电控制器自行主动终止充电。0xE3：充电控制器判定车载BMS异常，充电控制器自行主动终止充电。0xE4：车载BMS正常终止充电。0xE5：车载BMS故障终止充电。
+	UINT8   FF[2];   //保留字节，补足8字节
+}Power_PGN4096_FRAME; 
 
 //--------------------------- 2 状态帧 -----------------------------------------
 //充电启动完成状态帧
@@ -619,6 +644,10 @@ typedef struct _MC_ALL_FRAME
 	UINT32 MC_Recved_PGN22016_Flag;           //升级数据包应答报文
 	UINT32 MC_Recved_PGN24832_Flag; 
 	UINT32 MC_Recved_PGN3840_Flag; 
+	
+	UINT32 Power_kw_percent;
+	UINT32 Power_Adjust_Command;
+	UINT32 MC_Recved_Power_PGN4096_Flag; 
 	
 	MC_PGN25088_FRAME MC_PGN25088_frame;
 	UINT32 MC_Recved_PGN25088_Flag; 

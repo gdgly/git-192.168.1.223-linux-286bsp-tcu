@@ -41,8 +41,8 @@ static FILE *open_fp2 = NULL;
 static char read_send_buf[5] = {0};
 extern UINT32 send_Tran_Packet_Number ,SendTran_Packet;
 int ctr2_cmd_lost_count = 0;
-static UINT32 pre_outvolt,pre_out_current,pre_need_volt,pre_need_current;
-UINT32 TEMP_OFSET_2 = 0;
+static UINT32 pre_outvolt = 0,pre_out_current = 0,pre_need_volt = 0,pre_need_current = 0,pre_gun_link = 0;
+UINT32 TEMP_OFSET_2 = 0,Sys_MC_Recved_PGN4352_Flag2 = 0;
 
 /*******************************************************************************
 **description：MC读线程
@@ -103,6 +103,11 @@ extern void MC_read_deal_2(struct can_frame frame)
 			MC_All_Frame_2.MC_Recved_PGN3328_Flag = 1;
 			break;
 		}
+	  case PGN4096_ID_CM:{ //功率调节反馈，默认为成功，
+			Power_PGN4096_FRAME * pdata = (Power_PGN4096_FRAME *)frame.data;
+			MC_All_Frame_2.MC_Recved_Power_PGN4096_Flag = 1;
+			break;
+		}
 		case PGN4352_ID_CM:{  //启动完成帧
 			MC_PGN4352_FRAME * pdata = (MC_PGN4352_FRAME *)frame.data;
 
@@ -111,6 +116,8 @@ extern void MC_read_deal_2(struct can_frame frame)
 		  Globa_2->BMS_H_current = ((pdata->BMS_H_cur[1]<<8) + pdata->BMS_H_cur[0])*10;
 
 			MC_All_Frame_2.MC_Recved_PGN4352_Flag = 1;
+		  Globa_2->BMS_batt_Start_SOC = 0;
+      Sys_MC_Recved_PGN4352_Flag2 = 1;
 
 			break;
 		}
@@ -181,19 +188,20 @@ extern void MC_read_deal_2(struct can_frame frame)
 								Globa_2->BMS_need_time  = Globa_1->BMS_need_time;//(MC_All_Frame_2.MC_PGN8704_frame.BMS_need_time[1]<<8) + MC_All_Frame_2.MC_PGN8704_frame.BMS_need_time[0];
 								Globa_2->need_voltage = Globa_1->need_voltage;//((MC_All_Frame_2.MC_PGN8704_frame.need_voltage[1]<<8) + MC_All_Frame_2.MC_PGN8704_frame.need_voltage[0])*100;
 								Globa_2->need_current = Globa_1->need_current;//((MC_All_Frame_2.MC_PGN8704_frame.need_current[1]<<8) + MC_All_Frame_2.MC_PGN8704_frame.need_current[0])*10;
+						
 								if( (pre_outvolt != Globa_2->Output_voltage/1000)||(pre_out_current != Globa_2->Output_current/1000)||
-							    ( pre_need_volt !=  Globa_2->need_voltage/1000) || ( pre_need_current !=   Globa_2->need_current/1000))
+							    ( pre_need_volt !=  Globa_2->need_voltage/1000) || ( pre_need_current !=   Globa_2->need_current/1000)||(pre_gun_link != Globa_2->gun_link))
 								{
 									pre_outvolt = Globa_2->Output_voltage/1000;
 									pre_need_volt =  Globa_2->need_voltage/1000;
 									pre_need_current =  Globa_2->need_current/1000;
 									pre_out_current = Globa_2->Output_current/1000;
-									RunEventLogOut_2("双枪对一辆车模式:需求电压=%dV,需求电流=%dA,输出电压=%dV,输出电流=%dA,SOC=%d,枪温%d℃,单体最高电压(0.01)%dV Charge_Mode = %d",				
-													pre_need_volt,pre_need_current,pre_outvolt,pre_out_current,
-													Globa_2->BMS_batt_SOC,Globa_2->Charge_Gun_Temp-50,Globa_2->BMS_cell_HV,Globa_2->Charge_Mode);
+							   	pre_gun_link = Globa_2->gun_link;
+									RunEventLogOut_2("需求电压=%dV,需求电流=%dA,输出电压=%dV,输出电流=%dA,SOC=%d,枪温%d℃,单体最高电压%d.%dV 单体保护电压%d.%dV Charge_Mode = %d 枪连接=%d",				
+													pre_need_volt,pre_need_current,pre_outvolt,pre_out_current,Globa_2->BMS_batt_SOC,Globa_2->Charge_Gun_Temp-50,(Globa_2->BMS_cell_HV/100),Globa_2->BMS_cell_HV%100,Globa_2->Cell_H_Cha_Vol/100,Globa_2->Cell_H_Cha_Vol%100,Globa_2->Charge_Mode,pre_gun_link);
 								}
 							}else {
-								Globa_2->BMS_batt_SOC =   MC_All_Frame_2.MC_PGN8704_frame.SOC;
+								Globa_2->BMS_batt_SOC = (MC_All_Frame_2.MC_PGN8704_frame.SOC <= 100)? MC_All_Frame_2.MC_PGN8704_frame.SOC:100;
 								Globa_2->BMS_cell_HV = (MC_All_Frame_2.MC_PGN8704_frame.BMS_cell_HV[1]<<8) + MC_All_Frame_2.MC_PGN8704_frame.BMS_cell_HV[0];
 								Globa_2->BMS_cell_HV_NO = MC_All_Frame_2.MC_PGN8704_frame.BMS_cell_HV_NO;  //8最高单体电压序号
 								Globa_2->Charge_Mode = MC_All_Frame_2.MC_PGN8704_frame.Charge_Mode;        //8充电模式
@@ -207,16 +215,23 @@ extern void MC_read_deal_2(struct can_frame frame)
 								Globa_2->BMS_need_time  = (MC_All_Frame_2.MC_PGN8704_frame.BMS_need_time[1]<<8) + MC_All_Frame_2.MC_PGN8704_frame.BMS_need_time[0];
 								Globa_2->need_voltage = ((MC_All_Frame_2.MC_PGN8704_frame.need_voltage[1]<<8) + MC_All_Frame_2.MC_PGN8704_frame.need_voltage[0])*100;
 								Globa_2->need_current = ((MC_All_Frame_2.MC_PGN8704_frame.need_current[1]<<8) + MC_All_Frame_2.MC_PGN8704_frame.need_current[0])*10;
-						  	if( (pre_outvolt != Globa_2->Output_voltage/1000)||(pre_out_current != Globa_2->Output_current/1000)||
-							    ( pre_need_volt !=  Globa_2->need_voltage/1000) || ( pre_need_current !=   Globa_2->need_current/1000))
+						  	
+								if((Globa_2->BMS_batt_Start_SOC == 0)&&(Sys_MC_Recved_PGN4352_Flag2 == 1))
+								{
+									Globa_2->BMS_batt_Start_SOC = Globa_2->BMS_batt_SOC;
+								}
+								
+  							if( (pre_outvolt != Globa_2->Output_voltage/1000)||(pre_out_current != Globa_2->Output_current/1000)||
+							    ( pre_need_volt !=  Globa_2->need_voltage/1000) || ( pre_need_current !=   Globa_2->need_current/1000)||(pre_gun_link != Globa_2->gun_link))
 								{
 									pre_outvolt = Globa_2->Output_voltage/1000;
 									pre_need_volt =  Globa_2->need_voltage/1000;
 									pre_need_current =  Globa_2->need_current/1000;
 									pre_out_current = Globa_2->Output_current/1000;
-									RunEventLogOut_2("需求电压=%dV,需求电流=%dA,输出电压=%dV,输出电流=%dA,SOC=%d,枪温%d℃,单体最高电压(0.01)%dV Charge_Mode = %d",				
-													pre_need_volt,pre_need_current,pre_outvolt,pre_out_current,
-													Globa_2->BMS_batt_SOC,Globa_2->Charge_Gun_Temp-50,Globa_2->BMS_cell_HV,Globa_2->Charge_Mode);
+									pre_gun_link = Globa_2->gun_link;
+
+								  RunEventLogOut_2("需求电压=%dV,需求电流=%dA,输出电压=%dV,输出电流=%dA,Start_SOC=%d  SOC=%d,枪温%d℃,单体最高电压%d.%dV 单体保护电压%d.%dV Charge_Mode = %d 枪连接=%d",				
+													pre_need_volt,pre_need_current,pre_outvolt,pre_out_current,Globa_2->BMS_batt_Start_SOC,Globa_2->BMS_batt_SOC,Globa_2->Charge_Gun_Temp-50,(Globa_2->BMS_cell_HV/100),Globa_2->BMS_cell_HV%100,Globa_2->Cell_H_Cha_Vol/100,Globa_2->Cell_H_Cha_Vol%100,Globa_2->Charge_Mode,pre_gun_link);
 								}
 							}
 						}
@@ -424,8 +439,15 @@ int MC_sent_data_2(INT32 fd, UINT32 PGN, UINT32 flag, UINT32 gun)
 			MC_PGN768_FRAME * pdata = (MC_PGN768_FRAME *)frame.data;
 
 			pdata->gun = gun; //充电接口标识	BIN	1Byte	一桩（机）多充时用来标记接口号。一桩（机）一充时此项为0，多个接口时顺序对每个接口进行编号，范围1-255。
-			pdata->cause = 1; //停止充电原因	BIN	1Byte	0x01：计费控制单元正常停止 0x02: 计费控制单元故障终止
-
+		//	pdata->cause = 1; //停止充电原因	BIN	1Byte	0x01：计费控制单元正常停止 0x02: 计费控制单元故障终止
+	    if(Globa_2->Error_system != 0)//故障停止
+			{
+			  pdata->cause = 2;
+			}else if(Globa_2->Charger_Over_Rmb_flag != 0){
+				pdata->cause = 3;
+			}else{
+			  pdata->cause = 1; //停止充电原因	BIN	1Byte	0x01：计费控制单元正常停止--用户主动停止 0x02: 计费控制单元故障终止 0x03---达到设定条件停止
+			}
 			break;
 		}
 		case PGN2304_ID_MC:{//下发充电参数信息
@@ -472,9 +494,20 @@ int MC_sent_data_2(INT32 fd, UINT32 PGN, UINT32 flag, UINT32 gun)
 			MC_All_Frame_2.MC_PGN2304_frame.current_limit  = Globa_2->Charger_param.current_limit;
 			MC_All_Frame_2.MC_PGN2304_frame.gun_allowed_temp = Globa_2->Charger_param.gun_allowed_temp;
 			MC_All_Frame_2.MC_PGN2304_frame.Charging_gun_type = Globa_2->Charger_param.Charging_gun_type;
-			MC_All_Frame_2.MC_PGN2304_frame.model_Type  = Globa_2->Charger_param.Model_Type;
+			
+			if(Globa_2->Charger_param.Model_Type == 5){//永联模块的协议走的是默认英可瑞协议
+				MC_All_Frame_2.MC_PGN2304_frame.model_Type  = 1;
+			}
+			else{
+			  MC_All_Frame_2.MC_PGN2304_frame.model_Type  = Globa_2->Charger_param.Model_Type;
+			}
+		//	MC_All_Frame_2.MC_PGN2304_frame.model_Type  = Globa_2->Charger_param.Model_Type;
 			MC_All_Frame_2.MC_PGN2304_frame.Input_Relay_Ctl_Type  = Globa_1->Charger_param.Input_Relay_Ctl_Type;
-			MC_All_Frame_2.MC_PGN2304_frame.LED_Type_Keep  = (Globa_1->Charger_param.LED_Type_Config << 4)&0xF0;
+			if(Globa_1->Charger_param.LED_Type_Config != 1){//2号板不挂灯板
+				MC_All_Frame_2.MC_PGN2304_frame.LED_Type_Keep  = 0;
+			}else{ 
+			  MC_All_Frame_2.MC_PGN2304_frame.LED_Type_Keep  = (Globa_1->Charger_param.LED_Type_Config << 4)&0xF0;
+			}
 	    MC_All_Frame_2.MC_PGN2304_frame.Charge_min_voltage[0] = 0;
 			MC_All_Frame_2.MC_PGN2304_frame.Charge_min_voltage[1] = 0;
 			MC_All_Frame_2.MC_PGN2304_frame.charger_shileld_alarm_value.Shileld_PE_Fault = Globa_1->Charger_Shileld_Alarm.Shileld_PE_Fault;	       //屏蔽接地故障告警 ----非停机故障，指做显示	    
@@ -575,6 +608,25 @@ int MC_sent_data_2(INT32 fd, UINT32 PGN, UINT32 flag, UINT32 gun)
 			pdata->DC_Shunt_Range[1] = Globa_2->Charger_param.DC_Shunt_Range>>8;
 			break;
 		}
+		case PGN3840_ID_MC:{ //下发功率限制
+			frame.can_id = PGN3840_ID_MC;
+			frame.can_dlc = 8;
+			Power_PGN3840_FRAME * pdata = (Power_PGN3840_FRAME *)frame.data;
+			pdata->gun = gun;			
+			
+			pdata->Power_Adjust_Command = MC_All_Frame_2.Power_Adjust_Command;  //（目前就直接限定功率）功率调节指令类型:绝对值和百分比两种 01H：功率绝对值，输出值=功率调节参数值 02 百分比 输出值= 最大输出功率*百分比     
+		
+			pdata->Power_Adjust_data[0] = flag;
+			pdata->Power_Adjust_data[1] = flag>>8;
+			
+			pdata->FF[0];   //保留字节，补足8字节
+	    pdata->FF[1];   //保留字节，补足8字节
+	    pdata->FF[2];   //保留字节，补足8字节
+	    pdata->FF[3];   //保留字节，补足8字节
+		//	printf("发送ID %0x  	pdata->gun =%d pdata->Power_Adjust_Command=%d \n", PGN,	pdata->gun,pdata->Power_Adjust_Command);
+			break;
+		}
+		
 		case PGN4608_ID_MC:{//充电启动完成应答报文
 			frame.can_id = PGN4608_ID_MC;
 			frame.can_dlc = 8;
@@ -622,9 +674,9 @@ int MC_sent_data_2(INT32 fd, UINT32 PGN, UINT32 flag, UINT32 gun)
 			MC_PGN12544_FRAME * pdata = (MC_PGN12544_FRAME *)frame.data;
 
 			pdata->gun = gun;      //充电接口标识	BIN	1Byte	一桩（机）多充时用来标记接口号。一桩（机）一充时此项为0，多个接口时顺序对每个接口进行编号，范围1-255。
-			pdata->mc_state = 0;   //计费控制单元状态信息	BIN	1Byte	0-正常 1-故障
+			pdata->mc_state = Globa_2->Error_system;;   //计费控制单元状态信息	BIN	1Byte	0-正常 1-故障
 
-			data = Globa_2->kwh/10;
+			data = Globa_2->kwh/10; //0.1//kw
 			pdata->kwh[0] = data; 
 			pdata->kwh[1] = data>>8;
 			data = Globa_2->Time/60;
@@ -826,10 +878,11 @@ extern void MC_control_2(INT32 fd)
 			memset(&MC_All_Frame_2, 0x00, sizeof(MC_All_Frame_2));//把MC相关的数据和标志全部清零
 
 			Globa_2->MC_Step = 0x11;        //1 等待启动充电应答  1.1
-
+      Sys_MC_Recved_PGN4352_Flag2 = 0;
+      Globa_2->BMS_batt_Start_SOC = 0;
     	timer_start_2(250);
     	timer_start_2(5000);
-
+			RunEventLogOut_2("计费下发开始启动充电");
   		MC_sent_data_2(fd, PGN256_ID_MC, Globa_2->charger_start, 2);  //充电启动帧
   		sent_warning_message(0x94, 1, 2, 0);
       ctr2_cmd_lost_count = 0;
@@ -874,7 +927,7 @@ extern void MC_control_2(INT32 fd)
 				timer_start_2(250);
 			}
       
-			if(MC_All_Frame_2.MC_Recved_PGN25088_Flag == 0x01){//启动完成帧
+			if(MC_All_Frame_2.MC_Recved_PGN25088_Flag == 0x01){//BMS信息反馈
 				MC_All_Frame_2.MC_Recved_PGN25088_Flag = 0x00;
 				MC_sent_data_2(fd, PGN25344_ID_MC, Globa_2->VIN_Judgment_Result, 2);  //心跳帧
 			}
@@ -886,6 +939,8 @@ extern void MC_control_2(INT32 fd)
 			
   		if((Globa_2->Manu_start == 0)||(Globa_2->Error_system != 0)){//手动中止充电或系统故障中止充电
   			MC_sent_data_2(fd, PGN768_ID_MC, 1, 2);  //充电停止帧
+				RunEventLogOut_2("计费主动下发停止充电：Manu_start =%d Error_system =%d ",Globa_2->Manu_start,Globa_2->Error_system);
+
 			  if(Globa_2->Error.ctrl_connect_lost == 1){
 					Globa_2->MC_Step = 0xE1;//控制器响应超时
 					timer_stop_2(5000);
@@ -969,6 +1024,7 @@ extern void MC_control_2(INT32 fd)
 			break;
 		}
 		case 0xE0:{//---------------------------E0 充电流程正常结束-----------------
+			RunEventLogOut_2("计费收到CCU发送的停止完成帧报文：Manu_start =%d CCU结束码 =%0x",Globa_2->Manu_start,Globa_2->ctl_over_flag);
 			switch(Globa_2->ctl_over_flag & 0xFF00){//判断充电结束原因
 				case 0xE100:{//计费控制单元控制停止
 					if(Globa_2->Manu_start == 0){//计费控制单元正常停止(手动终止或达到设定条件如时间、电量、金额、余额不足)
@@ -1103,14 +1159,19 @@ extern void MC_control_2(INT32 fd)
     					Globa_2->charger_over_flag = 64;
     					break;
     				}
-						case 0xE219:{//系统判定BMS单体持续过压
+						case 0xE219:{//检测到VIN不匹配
     					sent_warning_message(0x94, 75, 2, 0);
     					Globa_2->charger_over_flag = 75;
     					break;
     				}
 						case 0xE21A:{//充电模块未准备
-    					sent_warning_message(0x94, 76, 1, 0);
+    					sent_warning_message(0x94, 76,2, 0);
     					Globa_2->charger_over_flag = 76;
+    					break;
+    				}
+						case 0xE21B:{//检测到BCL数据异常（需求电压，电流 会大于最高电压，电流）
+    					sent_warning_message(0x94, 77, 2, 0);
+    					Globa_2->charger_over_flag = 77;
     					break;
     				}
     				case 0xE2FF:{//系统其它故障，请查询告警记录
@@ -1119,8 +1180,8 @@ extern void MC_control_2(INT32 fd)
     					break;
     				}
     				default:{//未定义原因
-    					sent_warning_message(0x94, Globa_2->ctl_over_flag+20, 2, 0);//加20因为报告给QT显示的时候从20开始偏移
-    					Globa_2->charger_over_flag = Globa_2->ctl_over_flag+20;
+    					sent_warning_message(0x94, 90, 2, 0);//加20因为报告给QT显示的时候从20开始偏移
+    					Globa_2->charger_over_flag = 90; //未定义原因
     					break;
     				}
     			}
@@ -1160,8 +1221,8 @@ extern void MC_control_2(INT32 fd)
     					break;
     				}
     				default:{//未定义原因
-    					sent_warning_message(0x94, Globa_2->ctl_over_flag+55, 2, 0);//加55因为报告给QT显示的时候从55开始偏移
-    					Globa_2->charger_over_flag = Globa_2->ctl_over_flag+55;
+    					sent_warning_message(0x94, 91, 2, 0);//加55因为报告给QT显示的时候从55开始偏移
+    					Globa_2->charger_over_flag = 91;
     					break;
     				}
     			}
@@ -1187,8 +1248,8 @@ extern void MC_control_2(INT32 fd)
     				}
 
     				default:{//未定义原因
-    					sent_warning_message(0x94, Globa_2->ctl_over_flag+40, 2, 0);//加40因为报告给QT显示的时候从40开始偏移
-    					Globa_2->charger_over_flag = Globa_2->ctl_over_flag+40;
+    					sent_warning_message(0x94, 92, 2, 0);//加40因为报告给QT显示的时候从40开始偏移
+    					Globa_2->charger_over_flag = 92;
     					break;
     				}
     			}
@@ -1253,8 +1314,8 @@ extern void MC_control_2(INT32 fd)
     					break;
     				}
     				default:{//未定义原因
-    					sent_warning_message(0x94, Globa_2->ctl_over_flag+43, 2, 0);//加43因为报告给QT显示的时候从43开始偏移
-    					Globa_2->charger_over_flag = Globa_2->ctl_over_flag+43;
+    					sent_warning_message(0x94, 93, 2, 0);//加43因为报告给QT显示的时候从43开始偏移
+    					Globa_2->charger_over_flag = 93;
     					break;
     				}
     			}
@@ -1262,8 +1323,8 @@ extern void MC_control_2(INT32 fd)
     			break;
     		}
     		default:{//未定义原因
-    			sent_warning_message(0x94, Globa_2->ctl_over_flag>>8, 2, 0);//右移8位 让QT显示出非E1之E5的结束原因
-    			Globa_2->charger_over_flag = Globa_2->ctl_over_flag>>8;
+    			sent_warning_message(0x94, 94, 2, 0);//右移8位 让QT显示出非E1之E5的结束原因
+    			Globa_2->charger_over_flag = 94;
     			break;
     		}
 			}
