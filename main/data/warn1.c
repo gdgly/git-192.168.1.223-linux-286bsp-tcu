@@ -680,6 +680,7 @@ extern void MC_alarm_deal_1(UINT32 gun, UINT32 state, UINT32 alarm_sn, UINT32 fa
     			Globa_1->Error_ctl--;
     		}
     	}
+			break;
 		}
 		case 0x22:{//交流断路器断开
 			if(Globa_1->Error.killer_switch != fault){

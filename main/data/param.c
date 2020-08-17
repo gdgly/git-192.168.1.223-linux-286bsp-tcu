@@ -176,6 +176,13 @@ void	System_Param_reset(void)
 	Globa_1->Charger_param.Light_Control_Data.Start_time_on_min  = 0;
 	Globa_1->Charger_param.Light_Control_Data.End_time_off_hour  = 0;
 	Globa_1->Charger_param.Light_Control_Data.End_time_off_min   = 0;
+	
+	Globa_1->Charger_param.heartbeat_idle_period = 30;     //空闲心跳周期 秒
+	Globa_1->Charger_param.heartbeat_busy_period = 5;     //充电心跳周期 秒
+	Globa_1->Charger_param.charge_modlue_index = 0;
+	Globa_1->Charger_param.SOC_limit = 100;	//SOC达到多少时，判断电流低于min_current后停止充电,值95表示95%
+	Globa_1->Charger_param.min_current = 15;//单位A  值30表示低于30A后持续1分钟停止充电
+	Globa_1->Charger_param.CurrentVoltageJudgmentFalg = 0;//0-不判断 1-进行判断。收到的电压电流和CCU发送过来的进行判断
 }
 
 
@@ -790,6 +797,27 @@ void System_init(void)
   System_BackgroupIssued_Param_init();//后台参数配置
 	Globa_1->Electric_pile_workstart_Enable = gBackgroupIssued.Electric_pile_workstart_Enable;
 	Globa_2->Electric_pile_workstart_Enable = gBackgroupIssued.Electric_pile_workstart_Enable;
+	
+	if((Globa_1->Charger_param.heartbeat_idle_period > 60)||(Globa_1->Charger_param.heartbeat_idle_period < 1))
+	{
+		Globa_1->Charger_param.heartbeat_idle_period = 30;     //空闲心跳周期 秒
+	}
+	
+	if((Globa_1->Charger_param.heartbeat_busy_period > 40)||(Globa_1->Charger_param.heartbeat_busy_period < 1))
+	{
+  	Globa_1->Charger_param.heartbeat_busy_period = 5;     //充电心跳周期 秒
+	}
+	
+	if((Globa_1->Charger_param.SOC_limit > 100)||(Globa_1->Charger_param.SOC_limit < 20))
+	{
+	  Globa_1->Charger_param.SOC_limit = 100;	//SOC达到多少时，判断电流低于min_current后停止充电,值95表示95%
+	}
+	
+	if(Globa_1->Charger_param.min_current < 15)
+	{
+	  Globa_1->Charger_param.min_current = 15;//单位A  值10表示低于15A后持续1分钟停止充电
+	}
+
 	//必须有初值，不然后面上电签到时临时版本Globa_1->tmp_APP_ver[0]内存值未初始化
 	memcpy(&Globa_1->tmp_APP_ver[0], &Globa_1->Charger_param2.APP_ver[0], sizeof(Globa_1->Charger_param2.APP_ver));//APP版本号
 

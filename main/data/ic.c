@@ -1155,6 +1155,11 @@ void IC_Task()
 			pay_step_2 = Globa_2->pay_step;
 			printf(" xxxxxxxxxxxxxxGloba_1->pay_step= %d Globa_2->pay_step= %d-----\n", Globa_1->pay_step,Globa_2->pay_step);
 		}		
+		
+		
+		
+		
+		
 		// 优先级顺序 刷卡启动 ，后面三个并列（刷卡停止预约 刷卡停止充电 刷卡结算 ）
 		if(Globa_1->pay_step == 1){//在等待刷卡启动界面
 			Ret = MT625_Card_Search(fd); //寻卡

@@ -275,6 +275,14 @@ typedef struct _PAGE_3503_FRAME
 	 UINT8  LED_Type_Config;
 	 UINT8  AC_Meter_config;
 	 UINT8  AC_Meter_CT;
+	 
+	 UINT8  Model_Type;//模块类型
+	 UINT8  heartbeat_idle_period;     //空闲心跳周期 秒
+	 UINT8  heartbeat_busy_period;     //充电心跳周期 秒
+	 UINT8  charge_modlue_index; //具体模块索引
+	 UINT8  SOC_limit;	//SOC达到多少时，判断电流低于min_current后停止充电,值95表示95%
+	 UINT8  min_current ;//单位A  值30表示低于30A后持续1分钟停止充电
+	 UINT8  CurrentVoltageJudgmentFalg;//0-不判断 1-进行判断。收到的电压电流和CCU发送过来的进行判断
 	 UINT8  keep_data[2];//保留2个字节设置项
 }PAGE_3503_FRAME;
 static PAGE_3503_FRAME Page_3503;
@@ -312,10 +320,10 @@ typedef struct _PAGE_2100_FRAME
 {
 	UINT8   reserve1;        //保留
 
-	UINT8  measure_ver[20];
-	UINT8  contro_ver[20];//控制版本
-	UINT8  protocol_ver[20];//协议版本
-	UINT8  kernel_ver[20];//内核版本
+	UINT8  measure_ver[15];
+	UINT8  contro_ver[40];//控制版本
+	UINT8  protocol_ver[15];//协议版本
+	UINT8  kernel_ver[10];//内核版本
 
 	UINT8  Serv_Type;      //服务费收费方式 1：按次收费；2：按时间收费(元/10分钟；3：按电量
   UINT8  run_state;      //运行状态    
@@ -1320,8 +1328,9 @@ int Main_Task_1()
   UINT8 Sing_pushbtton_count1 = 0;
 	UINT8 Sing_pushbtton_count2 = 0;
 	UINT32 kwh_charged_rmbkwh = 0,charged_rmb = 0, kwh_charged_rmb = 0, kwh_charged_rmbkwh_serv = 0,  charged_rmb_serv = 0,kwh_charged_rmb_serv = 0,delta_kwh = 0;
-	UINT32 meter_Curr_Threshold_count= 0;
 	time_t systime=0,log_time =0;
+	UINT8 check_current_low_st = 0;//判断SOC达到设定限值后，电流低于设定值后停机
+	time_t Current_Systime=0,current_low_timestamp = 0,meter_Curr_Threshold_count= 0,Electrical_abnormality  = 0,current_overkwh_timestamp = 0;
 	struct tm tm_t,log_tm_t;
 	
 	prctl(PR_SET_NAME,(unsigned long)"QT1_Task");//设置线程名字 
@@ -1559,6 +1568,7 @@ int Main_Task_1()
 	while(1){
 		usleep(200000);//10ms
 		Main_1_Watchdog = 1;
+		Current_Systime = time(NULL);
 	  if(Globa_1->BMS_Power_V == 1){
 			GROUP1_BMS_Power24V_ON;
 		}else{
@@ -1839,7 +1849,7 @@ int Main_Task_1()
 	
 					Globa_1->total_rmb = 0;
 					ul_start_kwh = 0;
-		
+		      ul_start_kwh_2 = 0;
 				 	for(i=0;i<4;i++){
 						g_ulcharged_rmb[i] = 0;
 						g_ulcharged_kwh[i] = 0;
@@ -2060,7 +2070,7 @@ int Main_Task_1()
 					
 					memcpy(&Page_1111.SN[0], &busy_frame.card_sn[0], sizeof(Page_1111.SN));
     			msgsnd(Globa_1->arm_to_qt_msg_id, &msg, sizeof(PAGE_1111_FRAME), IPC_NOWAIT);
-          meter_Curr_Threshold_count= 0;
+         
     			QT_timer_start(500);
     			Globa_1->QT_Step = 0x22;   // 2 自动充电-》 APP 充电界面 状态 2.2-
           if(Globa_1->Charger_param.NEW_VOICE_Flag == 1){
@@ -2069,6 +2079,11 @@ int Main_Task_1()
 					Globa_1->charger_state = 0x04;
     			count_wait = 0;
 			    count_wait1 = 0;
+					meter_Curr_Threshold_count = Current_Systime;
+					current_low_timestamp = Current_Systime;
+					check_current_low_st = 0;
+					Electrical_abnormality = Current_Systime;
+					current_overkwh_timestamp = Current_Systime;
 					break;
     		}
     		
@@ -2134,7 +2149,11 @@ int Main_Task_1()
     					Page_2100.reserve1 = 1;
     					memset(&Page_2100.reserve1, 0x00, sizeof(Page_2100));
     					sprintf(&Page_2100.measure_ver[0], "%s", SOFTWARE_VER);
-    					sprintf(&Page_2100.contro_ver[0], "%s",  &Globa_1->contro_ver[0]);
+							if((Globa_1->Charger_param.System_Type <= 1 )||(Globa_1->Charger_param.System_Type == 4 )){//双枪的时候
+    					  sprintf(&Page_2100.contro_ver[0], "A:%s|B:%s",&Globa_1->contro_ver[0],&Globa_2->contro_ver[0]);
+							}else{
+							  sprintf(&Page_2100.contro_ver[0], "%s",&Globa_1->contro_ver[0]);	
+							}								
     					sprintf(&Page_2100.protocol_ver[0], "%s", PROTOCOL_VER);
     					sprintf(&Page_2100.kernel_ver[0], "%s", &Globa_1->kernel_ver[0]);
 
@@ -2274,6 +2293,7 @@ int Main_Task_1()
         Globa_1->order_chg_flag = 0;
 				Globa_1->private_price_acquireOK = 0;
 				Globa_1->Special_card_offline_flag = 0;
+        Globa_1->Charger_Over_Rmb_flag = 0;
 
 			  if(Globa_1->Charger_param.System_Type == 3){//壁挂是没有电表的
           Globa_1->meter_KWH = 0;
@@ -2385,6 +2405,7 @@ int Main_Task_1()
 						Globa_1->rmb = 0;
 						Globa_1->total_rmb = 0;
 						ul_start_kwh = 0;
+						ul_start_kwh_2 = 0;
 						Globa_1->Start_Mode = APP_START_TYPE;//app
 
 						for(i=0;i<4;i++){
@@ -2601,7 +2622,7 @@ int Main_Task_1()
 						memcpy(&msg.argv[0], &Page_1111.reserve1, sizeof(PAGE_1111_FRAME));
 						msgsnd(Globa_1->arm_to_qt_msg_id, &msg, sizeof(PAGE_1111_FRAME), IPC_NOWAIT);
 
-			      meter_Curr_Threshold_count= 0;
+			   
 						QT_timer_start(500);
 						Globa_1->QT_Step = 0x22;   // 2 自动充电-》 APP 充电界面 状态 2.2-
 
@@ -2610,10 +2631,15 @@ int Main_Task_1()
 						if( Globa_1->Charger_param.NEW_VOICE_Flag ==1){
 						  Voicechip_operation_function(0x05);  //05H     “系统自检中，请稍候”
 						}
+						meter_Curr_Threshold_count = Current_Systime;
+						current_low_timestamp = Current_Systime;
+						check_current_low_st = 0;
+						Electrical_abnormality = Current_Systime;
+						current_overkwh_timestamp = Current_Systime;
 						break;
 					}
 				}
-       
+
 			  if(Globa_1->Charger_param.System_Type == 1 ){//双枪轮流充电才需要这个
 					if((Globa_2->QT_Step == 0x21)||(Globa_2->QT_Step == 0x22)){//表示1号枪在充电
 					  Sing_pushbtton_count2++;
@@ -2848,6 +2874,7 @@ int Main_Task_1()
 								}
 						    Globa_1->kwh = 0;
 								ul_start_kwh = 0;
+								ul_start_kwh_2 = 0;
 								cur_price_index = GetCurPriceIndex(); //获取当前时间
 								pre_price_index = cur_price_index;
 								for(i=0;i<4;i++){
@@ -3039,7 +3066,12 @@ int Main_Task_1()
 							 Page_1300.RMB[2] =  Globa_1->total_rmb>>16;
 					     Page_1300.RMB[3] =  Globa_1->total_rmb>>24;
 							 memcpy(&Page_1300.SN[0], &Globa_1->card_sn[0], sizeof(Page_1300.SN));
-							 Page_1300.APP = 3;   //充电启动方式 1:刷卡  2：手机APP 3 VIN
+							// Page_1300.APP = 3;   //充电启动方式 1:刷卡  2：手机APP 3 VIN
+							#ifdef CHECK_BUTTON								
+								Page_1300.APP  = 3;   //充电启动方式 1:刷卡  2：手机APP
+							#else 
+								Page_1300.APP  = 1;   //充电启动方式 1:刷卡  2：手机APP
+							#endif	
 							 memcpy(&msg.argv[0], &Page_1300.reserve1, sizeof(PAGE_1300_FRAME));
 							 if((Globa_1->Charger_param.System_Type <= 1 )||(Globa_1->Charger_param.System_Type == 4 )){//双枪的时候
 							  	msg.type = 0x1300;//充电结束界面
@@ -3794,14 +3826,17 @@ int Main_Task_1()
 						card_falg_count = 0;
 						break;
 					}else{
-						 meter_Curr_Threshold_count= 0;
 						 Globa_1->VIN_Judgment_Result = 1;
 						if((Globa_1->Double_Gun_To_Car_falg == 1)&&(Globa_1->Charger_param.System_Type == 4)){
 							msg.type = 0x1133;//充电界面--双枪对一辆车
 							Globa_1->QT_Step = 0x24;//双枪对一辆车
 							Globa_2->charger_state = 0x04;
 						  memset(&Page_2020.reserve1, 0x00, sizeof(PAGE_2020_FRAME));
-							Page_2020.APP  = 3;
+						 #ifdef CHECK_BUTTON			
+							Page_2020.APP = 3;   //充电启动方式 1:刷卡  2：手机APP	
+						#else 
+							Page_2020.APP = 1;
+						#endif	
 	            Page_2020.BMS_12V_24V = Globa_1->BMS_Power_V;
 							memcpy(&Page_2020.SN[0], &Globa_1->card_sn[0], sizeof(Page_2020.SN));
 							memcpy(&msg.argv[0], &Page_2020.reserve1, sizeof(PAGE_2020_FRAME));
@@ -3830,6 +3865,11 @@ int Main_Task_1()
 						count_wait = 0;
 						count_wait1 = 0;
 						card_falg_count = 0;
+						meter_Curr_Threshold_count = Current_Systime;
+						current_low_timestamp = Current_Systime;
+						check_current_low_st = 0;
+						Electrical_abnormality = Current_Systime;
+						current_overkwh_timestamp = Current_Systime;
 						break;
 					}
 					break;
@@ -3839,7 +3879,7 @@ int Main_Task_1()
 				if(Globa_1->charger_start == 0){//充电彻底结束处理
 				  printf("-TTTTST------------\n");
 				  sleep(2);
-					Globa_1->meter_stop_KWH = Globa_1->meter_KWH;//取初始电表示数
+					Globa_1->meter_stop_KWH = (Globa_1->meter_KWH >= Globa_1->meter_stop_KWH)? Globa_1->meter_KWH:Globa_1->meter_stop_KWH;//取初始电表示数
 					Globa_1->kwh = (Globa_1->meter_stop_KWH - Globa_1->meter_start_KWH);
 					
 					g_ulcharged_kwh[pre_price_index] = Globa_1->kwh - ul_start_kwh;//累加当前时段的耗电量	
@@ -3935,12 +3975,25 @@ int Main_Task_1()
 
 					if(Globa_1->Charger_Over_Rmb_flag == 1){
 						Page_1300.cause = 13; 
+						sent_warning_message(0x94, Page_1300.cause, 1, 0);
 					}else if(Globa_1->Charger_Over_Rmb_flag == 3){
 						Page_1300.cause = 19; 
+						sent_warning_message(0x94, Page_1300.cause, 1, 0);
 					}else if(Globa_1->Charger_Over_Rmb_flag == 4){
 						Page_1300.cause = 62; 
+						sent_warning_message(0x94, Page_1300.cause, 1, 0);
 					}else if(Globa_1->Charger_Over_Rmb_flag == 5){
 						Page_1300.cause = 65; 
+						sent_warning_message(0x94, Page_1300.cause, 1, 0);
+					}else if(Globa_1->Charger_Over_Rmb_flag == 6){
+						Page_1300.cause = 9; 
+						sent_warning_message(0x94, Page_1300.cause, 1, 0);
+					}else if(Globa_1->Charger_Over_Rmb_flag == 7){//读取到的电表电量异常
+						Page_1300.cause = 8;
+						sent_warning_message(0x94, Page_1300.cause, 1, 0);							
+					}else if(Globa_1->Charger_Over_Rmb_flag == 8){//充电电流超过SOC能允许充电的值
+						Page_1300.cause = 7;
+						sent_warning_message(0x94, Page_1300.cause, 1, 0);							
 					}else{
 					  Page_1300.cause = Globa_1->charger_over_flag; 
 					}
@@ -3966,8 +4019,12 @@ int Main_Task_1()
 					Page_1300.RMB[3] =  Globa_1->total_rmb>>24;
 					
 					memcpy(&Page_1300.SN[0], &Globa_1->card_sn[0], sizeof(Page_1300.SN));
-					Page_1300.APP = 3;   //充电启动方式 1:刷卡  2：手机APP 3.VIN
-
+				//	Page_1300.APP = 3;   //充电启动方式 1:刷卡  2：手机APP 3.VIN
+          #ifdef CHECK_BUTTON			
+					  Page_1300.APP = 3;   //充电启动方式 1:刷卡  2：手机APP	
+					#else 
+						Page_1300.APP = 1;
+					#endif	
 					memcpy(&msg.argv[0], &Page_1300.reserve1, sizeof(PAGE_1300_FRAME));
 				
   				if((Globa_1->Charger_param.System_Type <= 1 )||(Globa_1->Charger_param.System_Type == 4 )){//双枪的时候
@@ -4004,6 +4061,7 @@ int Main_Task_1()
 			case 0x20:{//---------------2 自动充电-》 等待刷卡界面   2.0--------------
 		    Globa_1->kwh = 0;
 				ul_start_kwh = 0;
+				ul_start_kwh_2 = 0;
 			  cur_price_index = GetCurPriceIndex(); //获取当前时间
 				pre_price_index = cur_price_index;
       	for(i=0;i<4;i++){
@@ -4564,7 +4622,7 @@ int Main_Task_1()
 									Globa_1->Enterprise_Card_flag = 0;
 								}
 								Globa_1->charger_state = 0x04;
-								 meter_Curr_Threshold_count= 0;
+							
 								if((Globa_1->Double_Gun_To_Car_falg == 1)&&(Globa_1->Charger_param.System_Type == 4)){
 									msg.type = 0x1133;//充电界面--双枪对一辆车
 									Globa_1->QT_Step = 0x24;//双枪对一辆车
@@ -4600,6 +4658,11 @@ int Main_Task_1()
 								count_wait1 = 0;
 								card_falg_count = 0;
 								memset(&Page_BMS_data,0,sizeof(PAGE_BMS_FRAME));
+							  meter_Curr_Threshold_count = Current_Systime;
+								current_low_timestamp = Current_Systime;
+								check_current_low_st = 0;
+								Electrical_abnormality = Current_Systime;
+								current_overkwh_timestamp = Current_Systime;
                 break;
 						  }
 						  break;
@@ -4702,7 +4765,7 @@ int Main_Task_1()
 							
 							memset(&msg.argv[0], 0x00, sizeof(PAGE_1111_FRAME));
 							msgsnd(Globa_1->arm_to_qt_msg_id, &msg, sizeof(PAGE_1111_FRAME), IPC_NOWAIT);
-              meter_Curr_Threshold_count = 0;
+            
 							QT_timer_start(500);
 							Globa_1->QT_Step = 0x21;   // 2 自动充电-》 充电界面 状态 2.1-
               if( Globa_1->Charger_param.NEW_VOICE_Flag ==1){
@@ -4712,6 +4775,11 @@ int Main_Task_1()
 							Globa_1->checkout = 0;
 							Globa_1->pay_step = 3;
 							count_wait = 0;
+						  meter_Curr_Threshold_count = Current_Systime;
+							current_low_timestamp = Current_Systime;
+							check_current_low_st = 0;
+							Electrical_abnormality = Current_Systime;
+							current_overkwh_timestamp = Current_Systime;
 							break;
 						}
 					}else{
@@ -4743,7 +4811,6 @@ int Main_Task_1()
 								}
 								memset(&msg.argv[0], 0x00, sizeof(PAGE_1111_FRAME));
 								msgsnd(Globa_1->arm_to_qt_msg_id, &msg, sizeof(PAGE_1111_FRAME), IPC_NOWAIT);
-			          meter_Curr_Threshold_count = 0;
 								QT_timer_start(500);
 								Globa_1->QT_Step = 0x21;   // 2 自动充电-》 充电界面 状态 2.1-
 
@@ -4751,6 +4818,11 @@ int Main_Task_1()
 								Globa_1->checkout = 0;
 								Globa_1->pay_step = 3;	
 								count_wait = 0;
+								meter_Curr_Threshold_count = Current_Systime;
+								current_low_timestamp = Current_Systime;
+								check_current_low_st = 0;
+								Electrical_abnormality = Current_Systime;
+								current_overkwh_timestamp = Current_Systime;
 						  }
   					  break;
     			  }else{
@@ -4781,7 +4853,20 @@ int Main_Task_1()
 				if((card_falg_count > 20)&&(Globa_1->Start_Mode != VIN_START_TYPE)){
 					Globa_1->pay_step = 3; //允许刷卡 --刷卡停止充电
 				}
-				Globa_1->meter_stop_KWH = Globa_1->meter_KWH;//取初始电表示数
+				//Globa_1->meter_stop_KWH = Globa_1->meter_KWH;//取初始电表示数
+				if(Globa_1->meter_KWH >= Globa_1->meter_stop_KWH)
+				{
+					Globa_1->meter_stop_KWH = Globa_1->meter_KWH;//取初始电表示数
+					Electrical_abnormality = Current_Systime;
+				}else{//连续3s获取到的数据都比较起始数据小，则直接停止充电
+					if(abs(Current_Systime - Electrical_abnormality) > METER_ELECTRICAL_ERRO_COUNT)//超过1分钟了，需停止充电
+					{
+						Electrical_abnormality = Current_Systime;
+						Globa_1->Manu_start = 0;
+						Globa_1->Charger_Over_Rmb_flag = 7;//读取电量有异常
+						RunEventLogOut_1("计费QT判断读取电量有异常：Globa_1->meter_KWH=%d Globa_1->meter_stop_KWH=%d",Globa_1->meter_KWH,Globa_1->meter_stop_KWH);
+					}
+				}
 				Globa_1->kwh = Globa_1->meter_stop_KWH - Globa_1->meter_start_KWH;
 				
 				g_ulcharged_kwh[pre_price_index] = Globa_1->kwh - ul_start_kwh;//累加当前时段的耗电量	
@@ -4892,10 +4977,11 @@ int Main_Task_1()
 				//------------------ 刷卡停止充电 --------------------------------------
 				if(((Globa_1->checkout == 3)&&(Globa_1->card_type == 2))|| \
 					 ((Globa_1->checkout == 1)&&(Globa_1->card_type == 1))||(Globa_1->Electric_pile_workstart_Enable == 1)||((Globa_1->Start_Mode == VIN_START_TYPE)&&(msg.argv[0] == 1)&&((msg.type == 0x1111)||(msg.type == 0x1122)))){//用户卡灰锁 或正常员工卡
+					RunEventLogOut_1("计费QT判断用户主动停止充电");
 
      			Globa_1->Manu_start = 0;
           sleep(3);
-					Globa_1->meter_stop_KWH = Globa_1->meter_KWH;//取初始电表示数
+					Globa_1->meter_stop_KWH = (Globa_1->meter_KWH >= Globa_1->meter_stop_KWH)? Globa_1->meter_KWH:Globa_1->meter_stop_KWH;//取初始电表示数
 					Globa_1->kwh = (Globa_1->meter_stop_KWH - Globa_1->meter_start_KWH);
 					
 					g_ulcharged_kwh[pre_price_index] = Globa_1->kwh - ul_start_kwh;//累加当前时段的耗电量	
@@ -4918,7 +5004,6 @@ int Main_Task_1()
 					}else if(Serv_Type == 2){//按时间收
 						Globa_1->total_rmb = (Globa_1->rmb + Globa_1->Time*Globa_1->Charger_param.Serv_Price/600);//已充电电量对应的金额
 					}else{
-						//Globa_1->total_rmb = (Globa_1->rmb + Globa_1->kwh*Globa_1->Charger_param.Serv_Price/100);//已充电电量对应的金额
 						for(i = 0;i<4;i++){
 							g_ulcharged_rmb_Serv[i] = g_ulcharged_kwh[i]*share_time_kwh_price_serve[i];
 						}
@@ -5013,7 +5098,12 @@ int Main_Task_1()
 					
 					memcpy(&Page_1300.SN[0], &Globa_1->card_sn[0], sizeof(Page_1300.SN));
 					if(Globa_1->Start_Mode == VIN_START_TYPE){
-						Page_1300.APP = 3;   //充电启动方式 1:刷卡  2：手机APP 3.VIN
+						//Page_1300.APP = 3;   //充电启动方式 1:刷卡  2：手机APP 3.VIN
+						 #ifdef CHECK_BUTTON								
+              Page_1300.APP  = 3;   //充电启动方式 1:刷卡  2：手机APP
+            #else 
+	            Page_1300.APP  = 1;   //充电启动方式 1:刷卡  2：手机APP
+            #endif	
 					}else{
 						Page_1300.APP = 1;   //充电启动方式 1:刷卡  2：手机APP
 					}
@@ -5032,7 +5122,7 @@ int Main_Task_1()
 					
 					Globa_1->charger_state = 0x05;
 					Globa_1->checkout = 0;
-					
+
 					if(Globa_1->Start_Mode == VIN_START_TYPE){
 						Globa_1->pay_step = 0;
 					}
@@ -5049,7 +5139,7 @@ int Main_Task_1()
 
     		if(Globa_1->charger_start == 0){//充电彻底结束处理
 				  sleep(2);
-					Globa_1->meter_stop_KWH = Globa_1->meter_KWH;//取初始电表示数
+					Globa_1->meter_stop_KWH = (Globa_1->meter_KWH >= Globa_1->meter_stop_KWH)? Globa_1->meter_KWH:Globa_1->meter_stop_KWH;//取初始电表示数
 					Globa_1->kwh = (Globa_1->meter_stop_KWH - Globa_1->meter_start_KWH);
 					
 					g_ulcharged_kwh[pre_price_index] = Globa_1->kwh - ul_start_kwh;//累加当前时段的耗电量	
@@ -5143,17 +5233,32 @@ int Main_Task_1()
 					sprintf(&temp_char[0], "%08d", tmp_value);	
 					memcpy(&busy_frame.valley_allrmb_Serv[0], &temp_char[0], sizeof(busy_frame.valley_allrmb_Serv));
 
-					if(Globa_1->Charger_Over_Rmb_flag == 1){
+					if(Globa_1->Charger_Over_Rmb_flag == 1){//用户卡余额不足
 						Page_1300.cause = 13; 
-					}else if(Globa_1->Charger_Over_Rmb_flag == 3){
+						sent_warning_message(0x94, Page_1300.cause, 1, 0);
+					}else if(Globa_1->Charger_Over_Rmb_flag == 3){////有序充电时间到
 						Page_1300.cause = 19; 
-					}else if(Globa_1->Charger_Over_Rmb_flag == 4){
-						Page_1300.cause = 62; 
-					}else if(Globa_1->Charger_Over_Rmb_flag == 5){
+						sent_warning_message(0x94, Page_1300.cause, 1, 0);
+					}else if(Globa_1->Charger_Over_Rmb_flag == 4){//与绑定的VIN不一样
+						Page_1300.cause = 62;
+						sent_warning_message(0x94, Page_1300.cause, 1, 0);						
+					}else if(Globa_1->Charger_Over_Rmb_flag == 5){//电流计量有误差--电表和控制板的电流相差比较大
 						Page_1300.cause = 65; 
+						sent_warning_message(0x94, Page_1300.cause, 1, 0);
+					}else if(Globa_1->Charger_Over_Rmb_flag == 6){//达到SOC限制条件
+						Page_1300.cause = 9; 
+						sent_warning_message(0x94, Page_1300.cause, 1, 0);
+					}else if(Globa_1->Charger_Over_Rmb_flag == 7){//读取到的电表电量异常
+						Page_1300.cause = 8;
+						sent_warning_message(0x94, Page_1300.cause, 1, 0);							
+					}else if(Globa_1->Charger_Over_Rmb_flag == 8){//充电电流超过SOC能允许充电的值
+						Page_1300.cause = 7;
+						sent_warning_message(0x94, Page_1300.cause, 1, 0);							
 					}else{
 					  Page_1300.cause = Globa_1->charger_over_flag; 
 					}
+					RunEventLogOut_1("计费QT判断充电结束:Page_1300.cause =%d,Globa_1->charger_over_flag =%d ,Charger_Over_Rmb_flag =%d ",Page_1300.cause,Globa_1->charger_over_flag,Globa_1->Charger_Over_Rmb_flag);
+
 					sprintf(&temp_char[0], "%02d", Page_1300.cause);		
 					memcpy(&busy_frame.End_code[0], &temp_char[0], sizeof(busy_frame.End_code));//结束原因代码
 					
@@ -5175,7 +5280,12 @@ int Main_Task_1()
 					
 					memcpy(&Page_1300.SN[0], &Globa_1->card_sn[0], sizeof(Page_1300.SN));
 		      if(Globa_1->Start_Mode == VIN_START_TYPE){
-						Page_1300.APP = 3;   //充电启动方式 1:刷卡  2：手机APP 3.VIN
+						//Page_1300.APP = 3;   //充电启动方式 1:刷卡  2：手机APP 3.VIN
+					  #ifdef CHECK_BUTTON								
+              Page_1300.APP  = 3;   //充电启动方式 1:刷卡  2：手机APP
+            #else 
+	            Page_1300.APP  = 1;   //充电启动方式 1:刷卡  2：手机APP
+            #endif	
 					}else{
 						Page_1300.APP = 1;   //充电启动方式 1:刷卡  2：手机APP
 					}
@@ -5234,25 +5344,82 @@ int Main_Task_1()
 						Globa_1->Charger_Over_Rmb_flag = 3;//有序充电时间到
 					}
 				}
-#ifdef CHECK_CURRENT 				    
-			  if(Globa_1->Charger_param.System_Type != 3)
+				
+			
+
+				if(Globa_1->Time >  120)//120秒，充电启动2分种之后对电流判断
 				{
-					if(((abs(Globa_1->Output_current - Globa_1->meter_Current_A)*100 > METER_CURR_THRESHOLD_VALUE*Globa_1->Output_current)&&(Globa_1->Output_current >= LIMIT_CURRENT_VALUE))||
-					  ((abs(Globa_1->Output_current - Globa_1->meter_Current_A) > 1000)&&(Globa_1->Output_current < LIMIT_CURRENT_VALUE)))
-					{
-						meter_Curr_Threshold_count++;
-						if(meter_Curr_Threshold_count >= METER_CURR_COUNT){
-							meter_Curr_Threshold_count = 0;
-							Globa_1->Manu_start = 0;
-							Globa_1->Charger_Over_Rmb_flag = 5;//电流计量有误差
+					if(Globa_1->Charger_param.CurrentVoltageJudgmentFalg == 1)
+					{ 						
+						if(((abs(Globa_1->Output_current - Globa_1->meter_Current_A)*100 > METER_CURR_THRESHOLD_VALUE*Globa_1->Output_current)&&(Globa_1->Output_current >= LIMIT_CURRENT_VALUE))||
+							((abs(Globa_1->Output_current - Globa_1->meter_Current_A) > 1000)&&(Globa_1->Output_current < LIMIT_CURRENT_VALUE)&&(Globa_1->Output_current >= MIN_LIMIT_CURRENT_VALUE)))
+						{
+							if(abs(Current_Systime - meter_Curr_Threshold_count) > METER_CURR_COUNT)//超过1分钟了，需停止充电
+							{
+								Globa_1->Manu_start = 0;
+								Globa_1->Charger_Over_Rmb_flag = 5;//电流计量有误差
+								meter_Curr_Threshold_count = Current_Systime;
+								RunEventLogOut_1("计费QT判断计量有误差 Globa_1->meter_Current_A =%d Globa_1->Output_current=%d",Globa_1->meter_Current_A,Globa_1->Output_current);
+							}
+						}
+						else
+						{
+							meter_Curr_Threshold_count = Current_Systime;
 						}
 					}
-					else
+				
+					if(0 == check_current_low_st)
 					{
-						meter_Curr_Threshold_count = 0;
+						if(Globa_1->BMS_batt_SOC >= Globa_1->Charger_param.SOC_limit   )//
+						{						
+							if(Globa_1->Output_current < (Globa_1->Charger_param.min_current*1000))//电流低于限值
+							{
+								current_low_timestamp = Current_Systime;
+								check_current_low_st = 1;
+							}
+						}	
+					}else//电流低持续是否达到1分钟
+					{
+						if(Globa_1->Output_current > (Globa_1->Charger_param.min_current*1000 + 1000))//1A回差
+						{
+							check_current_low_st = 0;//clear						
+						}
+						
+						if(Globa_1->BMS_batt_SOC < Globa_1->Charger_param.SOC_limit   )
+							check_current_low_st = 0;//clear
+						
+						if(Globa_1->Output_current < (Globa_1->Charger_param.min_current*1000))
+						{
+							if(abs(Current_Systime - current_low_timestamp) > SOCLIMIT_CURR_COUNT)//超过1分钟了，需停止充电
+							{
+								Globa_1->Manu_start = 0;	
+								Globa_1->Charger_Over_Rmb_flag = 6;//达到SOC限制条件
+								RunEventLogOut_1("计费QT判断达到soc限制条件");
+                current_low_timestamp = Current_Systime;
+							}
+						}				
 					}
+					
+					if((Globa_1->BMS_Info_falg == 1)&&(Globa_1->Battery_Rate_KWh > 200))//收到BMs额定信息,额定电度需要大于20kwh才进行判断
+					{
+						if(Globa_1->kwh >= ((100 - Globa_1->BMS_batt_Start_SOC + MAX_LIMIT_OVER_RATEKWH)*Globa_1->Battery_Rate_KWh/10))
+						{
+							if(abs(Current_Systime - current_overkwh_timestamp) > OVER_RATEKWH_COUNT)//超过1分钟了，需停止充电
+							{
+								Globa_1->Manu_start = 0;	
+								Globa_1->Charger_Over_Rmb_flag = 8;//达到允许可充电电量
+								RunEventLogOut_1("计费QT判断达到根据总电量和起始SOC算出需要的总电量：Battery_Rate_KWh =%d.%d  充电电量 Globa_1->kwh = %d.%d ：startsoc=%d endsoc=%d",Globa_1->Battery_Rate_KWh/10,Globa_1->Battery_Rate_KWh%10, Globa_1->kwh/100,Globa_1->kwh%100,Globa_1->BMS_batt_Start_SOC,Globa_1->BMS_batt_SOC);
+                current_overkwh_timestamp = Current_Systime;
+							}
+						}else{
+							current_overkwh_timestamp = Current_Systime;
+						}
+					}else{
+						current_overkwh_timestamp = Current_Systime;
+					}
+						
 				}
-#endif				
+					
     		if(Globa_1->Card_charger_type == 3){//按金额充电
     			if((Globa_1->total_rmb + 50) >= Globa_1->QT_charge_money*100){
     				Globa_1->Manu_start = 0;
@@ -5298,7 +5465,7 @@ int Main_Task_1()
 					memcpy(&Page_1111.SN[0], &Globa_1->card_sn[0], sizeof(Page_1111.SN));
 					if(Globa_1->Start_Mode == VIN_START_TYPE){
             Page_1111.APP  = 3;   //充电启动方式 1:刷卡  2：手机APP
-					}else {
+					}else{
 						Page_1111.APP  = 1; 
 					}
 	        Page_1111.BMS_12V_24V = Globa_1->BMS_Power_V;
@@ -5357,7 +5524,23 @@ int Main_Task_1()
 				break;
 			}
 			case 0x22:{//---------------2 自动充电-》 APP 充电界面 状态  2.2----------
-				Globa_1->meter_stop_KWH = Globa_1->meter_KWH;//取初始电表示数
+			
+			//	Globa_1->meter_stop_KWH = Globa_1->meter_KWH;//取初始电表示数
+				
+				if(Globa_1->meter_KWH >= Globa_1->meter_stop_KWH)
+				{
+					Globa_1->meter_stop_KWH = Globa_1->meter_KWH;//取初始电表示数
+					Electrical_abnormality = Current_Systime;
+				}else{//连续3s获取到的数据都比较起始数据小，则直接停止充电
+					if(abs(Current_Systime - Electrical_abnormality) > METER_ELECTRICAL_ERRO_COUNT)//超过1分钟了，需停止充电
+					{
+						Electrical_abnormality = Current_Systime;
+						Globa_1->Manu_start = 0;
+						Globa_1->Charger_Over_Rmb_flag = 7;//读取电量有异常
+						RunEventLogOut_1("计费QT判断读取电量有异常：Globa_1->meter_KWH=%d Globa_1->meter_stop_KWH=%d",Globa_1->meter_KWH,Globa_1->meter_stop_KWH);
+					}
+				}
+				
 				Globa_1->kwh = (Globa_1->meter_stop_KWH - Globa_1->meter_start_KWH);
 				g_ulcharged_kwh[pre_price_index] = Globa_1->kwh - ul_start_kwh;//累加当前时段的耗电量	
 				
@@ -5466,12 +5649,14 @@ int Main_Task_1()
 
 				//手机终止充电
 				if((Globa_1->App.APP_start == 0)||(Globa_1->Electric_pile_workstart_Enable == 1)||((Globa_1->APP_Start_Account_type == 1)&&(Globa_1->have_hart == 0))){
-     			Globa_1->Manu_start = 0;
+     			RunEventLogOut_1("计费QT判断用户主远程动停止充电");
+					Globa_1->Manu_start = 0;
+					
           Globa_1->Special_price_APP_data_falg = 0; 
 					Globa_1->App.APP_start = 0;
 					Globa_1->APP_Start_Account_type = 0;
           sleep(3);
-					Globa_1->meter_stop_KWH = Globa_1->meter_KWH;//取初始电表示数
+					Globa_1->meter_stop_KWH = (Globa_1->meter_KWH >= Globa_1->meter_stop_KWH)? Globa_1->meter_KWH:Globa_1->meter_stop_KWH;//取初始电表示数
 				  Globa_1->kwh = (Globa_1->meter_stop_KWH - Globa_1->meter_start_KWH);
 					g_ulcharged_kwh[pre_price_index] = Globa_1->kwh - ul_start_kwh;//累加当前时段的耗电量	
 					
@@ -5671,7 +5856,7 @@ int Main_Task_1()
     			Globa_1->App.APP_start = 0;
           Globa_1->Special_price_APP_data_falg = 0; 
           sleep(2);
-					Globa_1->meter_stop_KWH = Globa_1->meter_KWH;//取初始电表示数
+					Globa_1->meter_stop_KWH = (Globa_1->meter_KWH >= Globa_1->meter_stop_KWH)? Globa_1->meter_KWH:Globa_1->meter_stop_KWH;//取初始电表示数
 					 Globa_1->kwh = (Globa_1->meter_stop_KWH - Globa_1->meter_start_KWH);
 					 g_ulcharged_kwh[pre_price_index] = Globa_1->kwh - ul_start_kwh;//累加当前时段的耗电量	
 					
@@ -5777,13 +5962,26 @@ int Main_Task_1()
 					//-------------------界面显示数据内容---------------------------------
 					if(Globa_1->Charger_Over_Rmb_flag == 1){
 						Page_1300.cause = 13; 
+						sent_warning_message(0x94, Page_1300.cause, 1, 0);
 					}else if (Globa_1->Charger_Over_Rmb_flag == 5){
 						Page_1300.cause = 65;
+						sent_warning_message(0x94, Page_1300.cause, 1, 0);
+					}else if (Globa_1->Charger_Over_Rmb_flag == 6){//达到SOC限制条件
+						Page_1300.cause = 9;
+						sent_warning_message(0x94, Page_1300.cause, 1, 0);
+					}else if(Globa_1->Charger_Over_Rmb_flag == 7){//读取到的电表电量异常
+						Page_1300.cause = 8;
+						sent_warning_message(0x94, Page_1300.cause, 1, 0);							
+					}else if(Globa_1->Charger_Over_Rmb_flag == 8){//充电电流超过SOC能允许充电的值
+						Page_1300.cause = 7;
+						sent_warning_message(0x94, Page_1300.cause, 1, 0);							
 					}else{
 					  Page_1300.cause = Globa_1->charger_over_flag; 
 					}
-					 sprintf(&temp_char[0], "%02d", Page_1300.cause);		
-					 memcpy(&busy_frame.End_code[0], &temp_char[0], sizeof(busy_frame.End_code));//结束原因代码
+					RunEventLogOut_1("计费QT判断充电结束:Page_1300.cause =%d,Globa_1->charger_over_flag =%d ,Charger_Over_Rmb_flag =%d ",Page_1300.cause,Globa_1->charger_over_flag,Globa_1->Charger_Over_Rmb_flag);
+
+					sprintf(&temp_char[0], "%02d", Page_1300.cause);		
+				  memcpy(&busy_frame.End_code[0], &temp_char[0], sizeof(busy_frame.End_code));//结束原因代码
           Globa_1->Charger_Over_Rmb_flag = 0;
 					
 	  			memcpy(&busy_frame.car_sn[0], &Globa_1->VIN, sizeof(busy_frame.car_sn));
@@ -5882,25 +6080,82 @@ int Main_Task_1()
     			Globa_1->Manu_start = 0;
 					Globa_1->Charger_Over_Rmb_flag = 1;
     		}
-#ifdef CHECK_CURRENT 					
-        if(Globa_1->Charger_param.System_Type != 3)
+				
+		 
+				if(Globa_1->Time >  120)//120秒，充电启动2分种之后对电流判断
 				{
-					if(((abs(Globa_1->Output_current - Globa_1->meter_Current_A)*100 > METER_CURR_THRESHOLD_VALUE*Globa_1->Output_current)&&(Globa_1->Output_current >= LIMIT_CURRENT_VALUE))||
-					  ((abs(Globa_1->Output_current - Globa_1->meter_Current_A) > 1000)&&(Globa_1->Output_current < LIMIT_CURRENT_VALUE)))
-					{
-						meter_Curr_Threshold_count++;
-						if(meter_Curr_Threshold_count >= METER_CURR_COUNT){
-							meter_Curr_Threshold_count = 0;
-							Globa_1->Manu_start = 0;
-							Globa_1->Charger_Over_Rmb_flag = 5;//电流计量有误差
+					if(Globa_1->Charger_param.CurrentVoltageJudgmentFalg == 1)
+					{ 						
+						if(((abs(Globa_1->Output_current - Globa_1->meter_Current_A)*100 > METER_CURR_THRESHOLD_VALUE*Globa_1->Output_current)&&(Globa_1->Output_current >= LIMIT_CURRENT_VALUE))||
+							((abs(Globa_1->Output_current - Globa_1->meter_Current_A) > 1000)&&(Globa_1->Output_current < LIMIT_CURRENT_VALUE)&&(Globa_1->Output_current >= MIN_LIMIT_CURRENT_VALUE)))
+						{
+							if(abs(Current_Systime - meter_Curr_Threshold_count) > METER_CURR_COUNT)//超过1分钟了，需停止充电
+							{
+								Globa_1->Manu_start = 0;
+								Globa_1->Charger_Over_Rmb_flag = 5;//电流计量有误差
+								meter_Curr_Threshold_count = Current_Systime;
+								RunEventLogOut_1("计费QT判断计量有误差 Globa_1->meter_Current_A =%d Globa_1->Output_current=%d",Globa_1->meter_Current_A,Globa_1->Output_current);
+
+							}
 						}
-					}
-					else
+						else
+						{
+							meter_Curr_Threshold_count = Current_Systime;
+						}
+					}			
+
+					if(0 == check_current_low_st)
 					{
-						meter_Curr_Threshold_count = 0;
+						if(Globa_1->BMS_batt_SOC >= Globa_1->Charger_param.SOC_limit   )//
+						{						
+							if(Globa_1->Output_current < (Globa_1->Charger_param.min_current*1000))//电流低于限值
+							{
+								current_low_timestamp = Current_Systime;
+								check_current_low_st = 1;
+							}
+						}	
+					}else//电流低持续是否达到1分钟
+					{
+						if(Globa_1->Output_current > (Globa_1->Charger_param.min_current*1000 + 1000))//1A回差
+						{
+							check_current_low_st = 0;//clear						
+						}
+						
+						if(Globa_1->BMS_batt_SOC < Globa_1->Charger_param.SOC_limit   )
+							check_current_low_st = 0;//clear
+						
+						if(Globa_1->Output_current < (Globa_1->Charger_param.min_current*1000))
+						{
+							if(abs(Current_Systime - current_low_timestamp) > SOCLIMIT_CURR_COUNT)//超过1分钟了，需停止充电
+							{
+								Globa_1->Manu_start = 0;	
+								Globa_1->Charger_Over_Rmb_flag = 6;//达到SOC限制条件
+								current_low_timestamp = Current_Systime;
+								RunEventLogOut_1("计费QT判断达到soc限制条件");
+
+							}
+						}				
 					}
-				}	
-#endif				
+					
+					if((Globa_1->BMS_Info_falg == 1)&&(Globa_1->Battery_Rate_KWh > 200))//收到BMs额定信息,额定电度需要大于20kwh才进行判断
+					{
+						if(Globa_1->kwh >= ((100 - Globa_1->BMS_batt_Start_SOC + MAX_LIMIT_OVER_RATEKWH)*Globa_1->Battery_Rate_KWh/10))
+						{
+							if(abs(Current_Systime - current_overkwh_timestamp) > OVER_RATEKWH_COUNT)//超过1分钟了，需停止充电
+							{
+								Globa_1->Manu_start = 0;	
+								Globa_1->Charger_Over_Rmb_flag = 8;//达到SOC限制条件
+								RunEventLogOut_1("计费QT判断达到根据总电量和起始SOC算出需要的总电量：Battery_Rate_KWh =%d.%d  充电电量 Globa_1->kwh = %d.%d ：startsoc=%d endsoc=%d",Globa_1->Battery_Rate_KWh/10,Globa_1->Battery_Rate_KWh%10, Globa_1->kwh/100,Globa_1->kwh%100,Globa_1->BMS_batt_Start_SOC,Globa_1->BMS_batt_SOC);
+                current_overkwh_timestamp = Current_Systime;
+							}
+						}else{
+							current_overkwh_timestamp = Current_Systime;
+						}
+					}else{
+						current_overkwh_timestamp = Current_Systime;
+					}
+				}
+				
     		if(Globa_1->App.APP_charger_type == 1){//按电量充电
     			if(Globa_1->kwh >= Globa_1->App.APP_charge_kwh){
     				Globa_1->Manu_start = 0;
@@ -6082,16 +6337,20 @@ int Main_Task_1()
 				
 				if(Globa_1->Start_Mode == VIN_START_TYPE)
 				{
-					if((msg.type == 0x1300)||(msg.type == 0x1310)){//收到该界面消息
-						switch(msg.argv[0]){//判断 在当前界面下 用户操作的按钮
-							case 0x01:{//1#通道选着按钮
-							 Globa_1->checkout = 3;
-							 break;
+					#ifdef CHECK_BUTTON			
+						if((msg.type == 0x1300)||(msg.type == 0x1310)){//收到该界面消息
+							switch(msg.argv[0]){//判断 在当前界面下 用户操作的按钮
+								case 0x01:{//1#通道选着按钮
+								 Globa_1->checkout = 3;
+								 break;
+								}
 							}
 						}
-					}
+					#else 
+						sleep(2);
+						Globa_1->checkout = 3;
+					#endif					
 				}
-				
 				if(Globa_1->checkout != 0){//1通道检测到充电卡 0：未知 1：灰锁 2：补充交易 3：卡片正常
       		msg.type = 0x95;//解除屏保
   				msgsnd(Globa_1->arm_to_qt_msg_id, &msg, 1, IPC_NOWAIT);
@@ -6187,7 +6446,7 @@ int Main_Task_1()
 				if(card_falg_count > 20){
 					Globa_1->pay_step = 3; //允许刷卡 --刷卡停止充电
 				}
-				Globa_1->meter_stop_KWH = Globa_1->meter_KWH;//取初始电表示数
+				Globa_1->meter_stop_KWH = (Globa_1->meter_KWH >= Globa_1->meter_stop_KWH)? Globa_1->meter_KWH:Globa_1->meter_stop_KWH;//取初始电表示数
 				Globa_1->kwh = Globa_1->meter_stop_KWH - Globa_1->meter_start_KWH;
 				
 				Globa_2->meter_stop_KWH = Globa_2->meter_KWH;//取初始电表示数
@@ -6377,6 +6636,7 @@ int Main_Task_1()
 				//------------------ 刷卡停止充电 --------------------------------------
 				if(((Globa_1->checkout == 3)&&(Globa_1->card_type == 2))|| \
 					 ((Globa_1->checkout == 1)&&(Globa_1->card_type == 1))||(Globa_1->Electric_pile_workstart_Enable == 1)||((Globa_1->Start_Mode == VIN_START_TYPE)&&(msg.argv[0] == 1)&&(msg.type == 0x1133))){//用户卡灰锁 或正常员工卡
+				  RunEventLogOut_2("计费QT判断用户主动停止充电-双枪对一辆车模式");
 
      			Globa_1->Manu_start = 0;
           sleep(3);
@@ -6579,7 +6839,11 @@ int Main_Task_1()
 					memcpy(&Page_1300.SN[0], &Globa_1->card_sn[0], sizeof(Page_1300.SN));
 					if(Globa_1->Start_Mode == VIN_START_TYPE)
 				  {	
-				     Page_1300.APP = 3;   //充电启动方式 1:刷卡  2：手机APP
+				    #ifdef CHECK_BUTTON			
+							Page_1300.APP = 3;   //充电启动方式 1:刷卡  2：手机APP	
+						#else 
+							Page_1300.APP = 1;
+						#endif							
 					}else{
 						Page_1300.APP = 1;   //充电启动方式 1:刷卡  2：手机APP 
 					}
@@ -6608,10 +6872,8 @@ int Main_Task_1()
     		if(Globa_1->charger_start == 0){//充电彻底结束处理
 					Globa_1->Manu_start = 0;
           sleep(3);
-					Globa_1->meter_stop_KWH = Globa_1->meter_KWH;//取初始电表示数
-					Globa_1->kwh = (Globa_1->meter_stop_KWH - Globa_1->meter_start_KWH);
-					
-					Globa_1->meter_stop_KWH = Globa_1->meter_KWH;//取初始电表示数
+	
+					Globa_1->meter_stop_KWH = (Globa_1->meter_KWH >= Globa_1->meter_stop_KWH)? Globa_1->meter_KWH:Globa_1->meter_stop_KWH;//取初始电表示数
 				  Globa_1->kwh = Globa_1->meter_stop_KWH - Globa_1->meter_start_KWH;
 				
 				  Globa_2->meter_stop_KWH = Globa_2->meter_KWH;//取初始电表示数
@@ -6725,15 +6987,30 @@ int Main_Task_1()
 					tmp_value =0;
 					if(Globa_1->Charger_Over_Rmb_flag == 1){
 						Page_1300.cause = 13; 
+						sent_warning_message(0x94, Page_1300.cause, 1, 0);
 					}else if(Globa_1->Charger_Over_Rmb_flag == 3){
 						Page_1300.cause = 19; 
+						sent_warning_message(0x94, Page_1300.cause, 1, 0);
 					}else if(Globa_1->Charger_Over_Rmb_flag == 4){
 						Page_1300.cause = 62; 
+						sent_warning_message(0x94, Page_1300.cause, 1, 0);
 					}else if (Globa_1->Charger_Over_Rmb_flag == 5){
 						Page_1300.cause = 65;
+						sent_warning_message(0x94, Page_1300.cause, 1, 0);
+					}else if (Globa_1->Charger_Over_Rmb_flag == 6){//达到SOC限制条件
+						Page_1300.cause = 9;
+						sent_warning_message(0x94, Page_1300.cause, 1, 0);
+					}else if(Globa_1->Charger_Over_Rmb_flag == 7){//读取到的电表电量异常
+						Page_1300.cause = 8;
+						sent_warning_message(0x94, Page_1300.cause, 1, 0);							
+					}else if(Globa_1->Charger_Over_Rmb_flag == 8){//充电电流超过SOC能允许充电的值
+						Page_1300.cause = 7;
+						sent_warning_message(0x94, Page_1300.cause, 1, 0);							
 					}else{
 						Page_1300.cause = Globa_1->charger_over_flag; 
 					}
+					RunEventLogOut_1("计费QT判断充电结束:Page_1300.cause =%d,Globa_1->charger_over_flag =%d ,Charger_Over_Rmb_flag =%d ",Page_1300.cause,Globa_1->charger_over_flag,Globa_1->Charger_Over_Rmb_flag);
+
 					sprintf(&temp_char[0], "%02d", Page_1300.cause);		
 					memcpy(&busy_frame.End_code[0], &temp_char[0], sizeof(busy_frame.End_code));//结束原因代码
 					
@@ -6820,8 +7097,12 @@ int Main_Task_1()
 					
 					if(Globa_1->Start_Mode == VIN_START_TYPE)
 				  {	
-					  Page_1300.APP = 3;   //充电启动方式 1:刷卡  2：手机APP
-						Globa_1->pay_step = 0;//1通道在等待刷卡扣费
+						#ifdef CHECK_BUTTON			
+							Page_1300.APP = 3;   //充电启动方式 1:刷卡  2：手机APP	
+						#else 
+							Page_1300.APP  = 1;
+						#endif							
+            Globa_1->pay_step = 0;//1通道在等待刷卡扣费
 					}else{
 				  	Page_1300.APP = 1;   //充电启动方式 1:刷卡  2：手机APP
 						Globa_1->pay_step = 4;//1通道在等待刷卡扣费
@@ -6872,25 +7153,81 @@ int Main_Task_1()
 						Bind_BmsVin_falg = 0;
 					}
 			  }
-#ifdef CHECK_CURRENT 				
-				if(Globa_1->Charger_param.System_Type != 3)
+				
+	
+				if(Globa_1->Time >  120)//120秒，充电启动2分种之后对电流判断
 				{
-					if(((abs(Globa_1->Output_current - Globa_1->meter_Current_A)*100 > METER_CURR_THRESHOLD_VALUE*Globa_1->Output_current)&&(Globa_1->Output_current >= LIMIT_CURRENT_VALUE))||
-					  ((abs(Globa_1->Output_current - Globa_1->meter_Current_A) > 1000)&&(Globa_1->Output_current < LIMIT_CURRENT_VALUE)))
-					{
-						meter_Curr_Threshold_count++;
-						if(meter_Curr_Threshold_count >= METER_CURR_COUNT){
-							meter_Curr_Threshold_count = 0;
-							Globa_1->Manu_start = 0;
-							Globa_1->Charger_Over_Rmb_flag = 5;//电流计量有误差
+					if(Globa_1->Charger_param.CurrentVoltageJudgmentFalg == 1)
+					{ 						
+						if(((abs(Globa_1->Output_current - Globa_1->meter_Current_A)*100 > METER_CURR_THRESHOLD_VALUE*Globa_1->Output_current)&&(Globa_1->Output_current >= LIMIT_CURRENT_VALUE))||
+							((abs(Globa_1->Output_current - Globa_1->meter_Current_A) > 1000)&&(Globa_1->Output_current < LIMIT_CURRENT_VALUE)&&(Globa_1->Output_current >= MIN_LIMIT_CURRENT_VALUE)))
+						{
+							if(abs(Current_Systime - meter_Curr_Threshold_count) > METER_CURR_COUNT)//超过1分钟了，需停止充电
+							{
+								Globa_1->Manu_start = 0;
+								Globa_1->Charger_Over_Rmb_flag = 5;//电流计量有误差
+								meter_Curr_Threshold_count = Current_Systime;
+								RunEventLogOut_1("计费QT判断计量有误差 Globa_1->meter_Current_A =%d Globa_1->Output_current=%d",Globa_1->meter_Current_A,Globa_1->Output_current);
+
+							}
+						}
+						else
+						{
+							meter_Curr_Threshold_count = Current_Systime;
 						}
 					}
-					else
+					
+					if(0 == check_current_low_st)
 					{
-						meter_Curr_Threshold_count = 0;
+						if(Globa_1->BMS_batt_SOC >= Globa_1->Charger_param.SOC_limit   )//
+						{						
+							if((Globa_1->Output_current + Globa_2->Output_current)  < (Globa_1->Charger_param.min_current*1000))//电流低于限值
+							{
+								current_low_timestamp = Current_Systime;
+								check_current_low_st = 1;
+							}
+						}	
+					}else//电流低持续是否达到1分钟
+					{
+						if((Globa_1->Output_current + Globa_2->Output_current) > (Globa_1->Charger_param.min_current*1000 + 1000))//1A回差
+						{
+							check_current_low_st = 0;//clear						
+						}
+						
+						if(Globa_1->BMS_batt_SOC < Globa_1->Charger_param.SOC_limit)
+							check_current_low_st = 0;//clear
+						
+						if((Globa_1->Output_current + Globa_2->Output_current) < (Globa_1->Charger_param.min_current*1000))
+						{
+							if(abs(Current_Systime - current_low_timestamp) > SOCLIMIT_CURR_COUNT)//超过1分钟了，需停止充电
+							{
+								Globa_1->Manu_start = 0;	
+								Globa_1->Charger_Over_Rmb_flag = 6;//达到SOC限制条件
+								current_low_timestamp = Current_Systime;
+								RunEventLogOut_1("计费QT判断达到soc限制条件");
+							}
+						}				
 					}
-				}
-#endif 				
+					
+					if((Globa_1->BMS_Info_falg == 1)&&(Globa_1->Battery_Rate_KWh > 200))//收到BMs额定信息,额定电度需要大于20kwh才进行判断
+					{
+						if(Globa_1->kwh >= ((100 - Globa_1->BMS_batt_Start_SOC + MAX_LIMIT_OVER_RATEKWH)*Globa_1->Battery_Rate_KWh/10))
+						{
+							if(abs(Current_Systime - current_overkwh_timestamp) > OVER_RATEKWH_COUNT)//超过1分钟了，需停止充电
+							{
+								Globa_1->Manu_start = 0;	
+								Globa_1->Charger_Over_Rmb_flag = 8;//达到SOC限制条件
+								RunEventLogOut_1("计费QT判断达到根据总电量和起始SOC算出需要的总电量：Battery_Rate_KWh =%d.%d  充电电量 Globa_1->kwh = %d.%d ：startsoc=%d endsoc=%d",Globa_1->Battery_Rate_KWh/10,Globa_1->Battery_Rate_KWh%10, Globa_1->kwh/100,Globa_1->kwh%100,Globa_1->BMS_batt_Start_SOC,Globa_1->BMS_batt_SOC);
+                current_overkwh_timestamp = Current_Systime;
+							}
+						}else{
+							current_overkwh_timestamp = Current_Systime;
+						}
+					}else{
+						current_overkwh_timestamp = Current_Systime;
+					}
+				}	
+	
 				if(Globa_1->order_chg_flag == 1){//有序充电时，进行试驾判断，当时间大于
 				  if(ISorder_chg_control()){
 						Globa_1->Manu_start = 0;
@@ -7108,6 +7445,7 @@ int Main_Task_1()
 				
 				if(Globa_1->Start_Mode == VIN_START_TYPE)
 				{
+#ifdef   CHECK_BUTTON					
 					if(msg.type == 0x1310){//收到该界面消息
 						switch(msg.argv[0]){//判断 在当前界面下 用户操作的按钮
 							case 0x01:{//1#通道选着按钮
@@ -7116,6 +7454,10 @@ int Main_Task_1()
 							}
 						}
 					}
+#else 
+	      sleep(2);
+	      Globa_1->checkout = 3;
+#endif	
 				}
 
 				if(Globa_1->checkout != 0){//1通道检测到充电卡 0：未知 1：灰锁 2：补充交易 3：卡片正常
@@ -7147,9 +7489,9 @@ int Main_Task_1()
 						pthread_mutex_unlock(&busy_db_pmutex);
   					
 						pthread_mutex_lock(&busy_db_pmutex);
-						if(Update_Charger_Busy_DB_2(id, &busy_frame_2, 2, 0x00) == -1){
+						if(Update_Charger_Busy_DB_2(id_NO_2, &busy_frame_2, 2, 0x00) == -1){
 							usleep(10000);
-							Update_Charger_Busy_DB_2(id, &busy_frame_2, 2, 0x00);//更新交易标志，传输标志0x00 交易数据完整，可以再获取流水号后上传
+							Update_Charger_Busy_DB_2(id_NO_2, &busy_frame_2, 2, 0x00);//更新交易标志，传输标志0x00 交易数据完整，可以再获取流水号后上传
 						}
 						pthread_mutex_unlock(&busy_db_pmutex);
 						//------------结算终于结束，退出结算界面--------------------------
@@ -7200,17 +7542,17 @@ int Main_Task_1()
 						Insertflag = Insert_Charger_Busy_DB(&busy_frame_2, &all_id, 0);//写新数据库记录 有流水号 传输标志0x55不能上传
 						if((Insertflag != -1)&&(all_id != 0)){//表示插入数据成功，其他的则需要重新插入
 							Delete_Record_busy_DB_2(id_NO_2);
-							if(DEBUGLOG) RUN_GUN1_LogOut("一号枪交易数据,插入到正式数据库中并删除临时数据库记录 ID = %d",id);  
+							if(DEBUGLOG) RUN_GUN1_LogOut("2号枪交易数据,插入到正式数据库中并删除临时数据库记录 ID = %d",id);  
 							id_NO_2 = 0;
 						}else{
-							if(DEBUGLOG) RUN_GUN1_LogOut("一号枪交易数据,插入到正式数据库中失败 ID = %d",id);  
+							if(DEBUGLOG) RUN_GUN1_LogOut("2号枪交易数据,插入到正式数据库中失败 ID = %d",id);  
 						}
 						//pthread_mutex_unlock(&busy_db_pmutex);
 		        if(id_NO_2 != 0){
 						//	pthread_mutex_lock(&busy_db_pmutex);
 							for(i=0;i<5;i++){
 								if(Select_NO_Over_Record_2(id_NO_2,0)!= -1){//表示有没有上传的记录							
-									Update_Charger_Busy_DB_2(id, &busy_frame, 2, 0x00);//更新交易标志，传输标志0x00 交易数据完整，可以再获取流水号后上传
+									Update_Charger_Busy_DB_2(id_NO_2, &busy_frame_2, 2, 0x00);//更新交易标志，传输标志0x00 交易数据完整，可以再获取流水号后上传
 								}else{
 									id_NO_2 = 0;	
 									break;
@@ -7370,6 +7712,15 @@ int Main_Task_1()
 							Page_3503.Car_Lock_addr1 = dev_cfg.dev_para.car_lock_addr[0];
 							Page_3503.Car_Lock_addr2 = dev_cfg.dev_para.car_lock_addr[1];
 						  Page_3503.LED_Type_Config = Globa_1->Charger_param.LED_Type_Config;
+							
+							Page_3503.Model_Type = 	Globa_1->Charger_param.Model_Type;//模块类型
+							Page_3503.heartbeat_idle_period = Globa_1->Charger_param.heartbeat_idle_period;     //空闲心跳周期 秒
+							Page_3503.heartbeat_busy_period = Globa_1->Charger_param.heartbeat_busy_period;     //充电心跳周期 秒
+							Page_3503.charge_modlue_index = Globa_1->Charger_param.charge_modlue_index;
+							Page_3503.SOC_limit = Globa_1->Charger_param.SOC_limit;	//SOC达到多少时，判断电流低于min_current后停止充电,值95表示95%
+							Page_3503.min_current =  Globa_1->Charger_param.min_current ;//单位A  值30表示低于30A后持续1分钟停止充电
+							Page_3503.CurrentVoltageJudgmentFalg = Globa_1->Charger_param.CurrentVoltageJudgmentFalg;//0-不判断 1-进行判断。收到的电压电流和CCU发送过来的进行判断
+							
 							memcpy(&msg.argv[0], &Page_3503.reserve1, sizeof(Page_3503));
      					msg.type = 0x3500;
 							msgsnd(Globa_1->arm_to_qt_msg_id, &msg, sizeof(Page_3503), IPC_NOWAIT);
@@ -7605,7 +7956,8 @@ int Main_Task_1()
 							 if((Globa_1->Charger_param.System_Type != 0)&&(Globa_1->Charger_param.System_Type != 4)){
       					  Globa_1->Charger_param.Charge_rate_number2 = Globa_1->Charger_param.Charge_rate_number1;
 								}
-  							if(Globa_1->Charger_param.charge_modluetype <= 4 ){//重新添加R95021G1 --20KW 21A R50040G1 20kW 
+								
+  							/*if(Globa_1->Charger_param.charge_modluetype <= 4 ){//重新添加R95021G1 --20KW 21A R50040G1 20kW 
 									Globa_1->Charger_param.Model_Type = 0; //华为模块
 								}else if((Globa_1->Charger_param.charge_modluetype >= 5)&&(Globa_1->Charger_param.charge_modluetype <= 8)){
 									Globa_1->Charger_param.Model_Type = 3; //EAST 模块
@@ -7613,15 +7965,27 @@ int Main_Task_1()
 									Globa_1->Charger_param.Model_Type  = 1;
 								}else if((Globa_1->Charger_param.charge_modluetype > 20)&&(Globa_1->Charger_param.charge_modluetype <= 26)){//英飞源
 									Globa_1->Charger_param.Model_Type = 2; 
-								}else if((Globa_1->Charger_param.charge_modluetype > 26)&&(Globa_1->Charger_param.charge_modluetype <= 28)){//永联模块-用的协议还是英可瑞的
+								}else if((Globa_1->Charger_param.charge_modluetype > 26)&&(Globa_1->Charger_param.charge_modluetype <= 30)){//永联模块-用的协议还是英可瑞的
 									Globa_1->Charger_param.Model_Type = 1; 
-								}
+								}else if((Globa_1->Charger_param.charge_modluetype >= 31)){//中兴
+									Globa_1->Charger_param.Model_Type = 4; 
+								}*/
+
 							  Globa_1->Charger_param.Serial_Network = Page_3503_temp->Serial_Network; 
                 Globa_1->Charger_param.DTU_Baudrate = Page_3503_temp->DTU_Baudrate;
 			      	  Globa_1->Charger_param.NEW_VOICE_Flag =  Page_3503_temp->NEW_VOICE_Flag;
 						    Globa_1->Charger_param.couple_flag =  Page_3503_temp->couple_flag;
 						  	Globa_1->Charger_param.Control_board_Baud_rate = Page_3503_temp->Control_board_Baud_rate;
 							  Globa_1->Charger_param.LED_Type_Config = Page_3503_temp->LED_Type_Config;
+							  Globa_1->Charger_param.Model_Type = Page_3503_temp->Model_Type;//模块类型
+						    Globa_1->Charger_param.heartbeat_idle_period = 	Page_3503_temp->heartbeat_idle_period;     //空闲心跳周期 秒
+						    Globa_1->Charger_param.heartbeat_busy_period = Page_3503_temp->heartbeat_busy_period;     //充电心跳周期 秒
+							  Globa_1->Charger_param.charge_modlue_index = 	Page_3503_temp->charge_modlue_index ; //具体模块索引
+							  Globa_1->Charger_param.SOC_limit = Page_3503_temp->SOC_limit;	//SOC达到多少时，判断电流低于min_current后停止充电,值95表示95%
+							  Globa_1->Charger_param.min_current = Page_3503_temp->min_current;//单位A  值30表示低于30A后持续1分钟停止充电
+							  Globa_1->Charger_param.CurrentVoltageJudgmentFalg = Page_3503_temp->CurrentVoltageJudgmentFalg;//0-不判断 1-进行判断。收到的电压电流和CCU发送过来的进行判断
+							
+								
 								if((dev_cfg.dev_para.car_lock_num != Page_3503_temp->Car_Lock_number)
 									||(dev_cfg.dev_para.car_lock_addr[0] != Page_3503_temp->Car_Lock_addr1)
 							    ||(dev_cfg.dev_para.car_lock_addr[1] != Page_3503_temp->Car_Lock_addr2)
@@ -7811,9 +8175,9 @@ int Main_Task_1()
 							Globa_1->Charger_param.set_current = ((msg.argv[4]<<8)+msg.argv[3])*100;
 
           		Globa_1->QT_charge_time = (msg.argv[6]<<8)+msg.argv[5];  //时间    分
-          		Globa_1->QT_gun_select = 1; //msg.argv[7];    //充电枪选择 1：充电枪1 2: 充电枪2
+          		Globa_1->QT_gun_select = msg.argv[7];    //充电枪选择 1：充电枪1 2: 充电枪2
 
-  						System_param_save();//保存系统参数
+  						//System_param_save();//保存系统参数
   						printf("手动设置电压: %d\n", Globa_1->Charger_param.set_voltage);
   						printf("手动设置电流: %d\n", Globa_1->Charger_param.set_current); 
   						printf("预设充电时间: %d\n", Globa_1->QT_charge_time);
@@ -7823,20 +8187,34 @@ int Main_Task_1()
     					break;
     				}   
     				case 0x02:{//开始充电按钮
-							Globa_1->Manu_start = 2;
-    					Globa_1->charger_start = 2;
-							
-							Globa_1->charger_state = 0x04;
+						  if(Globa_1->QT_gun_select == 1)
+							{
+								Globa_1->Manu_start = 2;
+								Globa_1->charger_start = 2;
+								Globa_1->charger_state = 0x04;
+							}else if(Globa_1->QT_gun_select == 2)
+							{
+								Globa_2->Manu_start = 2;
+								Globa_2->charger_start = 2;
+								Globa_2->charger_state = 0x04;
+							}
 
     					break;
     				}
     				case 0x03:{//停止充电按钮
-							Globa_1->Manu_start = 0;
+							if(Globa_1->QT_gun_select == 1)
+							{
+								Globa_1->Manu_start = 0;
+							}else if(Globa_1->QT_gun_select == 2)
+							{
+								Globa_2->Manu_start = 0;
+							}
 
     					break;
     				}
     				case 0x04:{//退出 按钮
 							Globa_1->Manu_start = 0;
+							Globa_2->Manu_start = 0;
 
 							msg.type = 0x3000;
 							msgsnd(Globa_1->arm_to_qt_msg_id, &msg, 1, IPC_NOWAIT);					
@@ -7844,6 +8222,7 @@ int Main_Task_1()
 							Globa_1->QT_Step = 0x31;
 
 							Globa_1->charger_state = 0x03;
+							Globa_2->charger_state = 0x03;
 
 							break;
     				}
@@ -7858,24 +8237,45 @@ int Main_Task_1()
 				if(QT_timer_tick(500) == 1){
     			//定时刷新数据
     			Page_3600.reserve1 = 2;//只刷新实时数据
-					Page_3600.NEED_V[0] =  Globa_1->Charger_param.set_voltage/100;
-					Page_3600.NEED_V[1] = (Globa_1->Charger_param.set_voltage/100)>>8;
-					Page_3600.NEED_C[0] =  Globa_1->Charger_param.set_current/100;
-					Page_3600.NEED_C[1] = (Globa_1->Charger_param.set_current/100)>>8;
-          Page_3600.time[0] = Globa_1->QT_charge_time;
-          Page_3600.time[1] = Globa_1->QT_charge_time>>8;
-          Page_3600.select = 1; //Globa->QT_gun_select;    //充电枪选择 1：充电枪1 2: 充电枪2
+					if(Globa_1->QT_gun_select == 1)
+					{
+						Page_3600.NEED_V[0] =  Globa_1->Charger_param.set_voltage/100;
+						Page_3600.NEED_V[1] = (Globa_1->Charger_param.set_voltage/100)>>8;
+						Page_3600.NEED_C[0] =  Globa_1->Charger_param.set_current/100;
+						Page_3600.NEED_C[1] = (Globa_1->Charger_param.set_current/100)>>8;
+						Page_3600.time[0] = Globa_1->QT_charge_time;
+						Page_3600.time[1] = Globa_1->QT_charge_time>>8;
+						Page_3600.select = 1; //Globa->QT_gun_select;    //充电枪选择 1：充电枪1 2: 充电枪2
 
-					Page_3600.BATT_V[0] = Globa_1->Output_voltage/100;
-					Page_3600.BATT_V[1] = (Globa_1->Output_voltage/100)>>8;
-					Page_3600.BATT_C[0] = Globa_1->Output_current/100;
-					Page_3600.BATT_C[1] = (Globa_1->Output_current/100)>>8;
+						Page_3600.BATT_V[0] = Globa_1->Output_voltage/100;
+						Page_3600.BATT_V[1] = (Globa_1->Output_voltage/100)>>8;
+						Page_3600.BATT_C[0] = Globa_1->Output_current/100;
+						Page_3600.BATT_C[1] = (Globa_1->Output_current/100)>>8;
 
-					Page_3600.Time[0] = Globa_1->Time;
-					Page_3600.Time[1] = Globa_1->Time>>8;
-					Page_3600.KWH[0] =  Globa_1->kwh;
-					Page_3600.KWH[1] =  Globa_1->kwh>>8;
+						Page_3600.Time[0] = Globa_1->Time;
+						Page_3600.Time[1] = Globa_1->Time>>8;
+						Page_3600.KWH[0] =  Globa_1->kwh;
+						Page_3600.KWH[1] =  Globa_1->kwh>>8;
+					}else if(Globa_1->QT_gun_select == 2)
+					{
+						Page_3600.NEED_V[0] =  Globa_2->Charger_param.set_voltage/100;
+						Page_3600.NEED_V[1] = (Globa_2->Charger_param.set_voltage/100)>>8;
+						Page_3600.NEED_C[0] =  Globa_2->Charger_param.set_current/100;
+						Page_3600.NEED_C[1] = (Globa_2->Charger_param.set_current/100)>>8;
+						Page_3600.time[0] = Globa_2->QT_charge_time;
+						Page_3600.time[1] = Globa_2->QT_charge_time>>8;
+						Page_3600.select = 2; //Globa->QT_gun_select;    //充电枪选择 1：充电枪1 2: 充电枪2
 
+						Page_3600.BATT_V[0] = Globa_2->Output_voltage/100;
+						Page_3600.BATT_V[1] = (Globa_2->Output_voltage/100)>>8;
+						Page_3600.BATT_C[0] = Globa_2->Output_current/100;
+						Page_3600.BATT_C[1] = (Globa_2->Output_current/100)>>8;
+
+						Page_3600.Time[0] = Globa_2->Time;
+						Page_3600.Time[1] = Globa_2->Time>>8;
+						Page_3600.KWH[0] =  Globa_2->kwh;
+						Page_3600.KWH[1] =  Globa_2->kwh>>8;
+					}
           msg.type = 0x3600;
 					memcpy(&msg.argv[0], &Page_3600.reserve1, sizeof(PAGE_3600_FRAME));
 					msgsnd(Globa_1->arm_to_qt_msg_id, &msg, sizeof(PAGE_3600_FRAME), IPC_NOWAIT);
