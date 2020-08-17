@@ -125,7 +125,83 @@ static unsigned char Meter_645_cs(unsigned char *p, int L)
 
 	return c;
 }
+//读总电量--根据雅达电表自定义的3位小数，
+static int All_kwh_read_New(unsigned int *meter_now_All_KWH, int fd, unsigned char *addr)
+{
+    int i=0,j=0,start_flag=0;
+    int Count,status;
 
+    unsigned char SentBuf[255];
+    unsigned char recvBuf[255];
+ 
+		SentBuf[0] = 0xFE;
+		SentBuf[1] = 0xFE;
+		SentBuf[2] = 0xFE;
+		SentBuf[3] = 0xFE;
+		Mt_645_2007_All_Electricity_cmd[Dlt645_Read_SrcAddr + 0] = str2_to_BCD(&addr[10]); //A0
+		Mt_645_2007_All_Electricity_cmd[Dlt645_Read_SrcAddr + 1] = str2_to_BCD(&addr[8]); //A1
+		Mt_645_2007_All_Electricity_cmd[Dlt645_Read_SrcAddr + 2] = str2_to_BCD(&addr[6]); //A2
+		Mt_645_2007_All_Electricity_cmd[Dlt645_Read_SrcAddr + 3] = str2_to_BCD(&addr[4]); //A3
+		Mt_645_2007_All_Electricity_cmd[Dlt645_Read_SrcAddr + 4] = str2_to_BCD(&addr[2]); //A4
+		Mt_645_2007_All_Electricity_cmd[Dlt645_Read_SrcAddr + 5] = str2_to_BCD(&addr[0]); //A5
+		Mt_645_2007_All_Electricity_cmd[Dlt645_Read_ID0] = 0x00;
+		Mt_645_2007_All_Electricity_cmd[Dlt645_Read_ID1] = 0x00;
+		Mt_645_2007_All_Electricity_cmd[Dlt645_Read_ID2] = 0xD1; //当前正向有功总电能
+		Mt_645_2007_All_Electricity_cmd[Dlt645_Read_ID3] = 0x00;
+		AddSun0x33(&Mt_645_2007_All_Electricity_cmd[Dlt645_Read_ID0], Mt_645_2007_All_Electricity_cmd[Dlt645_Read_L], 1);//+33处理  Cost=1=+33,其它=-33
+		Mt_645_2007_All_Electricity_cmd[Dlt645_Read_CS] = Meter_645_cs(Mt_645_2007_All_Electricity_cmd,(sizeof(Mt_645_2007_All_Electricity_cmd)-2));	
+		memcpy(&SentBuf[4], Mt_645_2007_All_Electricity_cmd, sizeof(Mt_645_2007_All_Electricity_cmd));//复制表地址								
+		
+		Led_Relay_Control(6, 0);
+		write(fd, SentBuf, sizeof(Mt_645_2007_All_Electricity_cmd) + 4);
+		do{
+			ioctl(fd, TIOCSERGETLSR, &status);
+		} while (status!=TIOCSER_TEMT);
+		usleep(5000);
+		Led_Relay_Control(6, 1);
+		Count = read_datas_tty(fd, recvBuf, 255, 1000000, 300000);
+		if(Count >= (sizeof(Mt_645_2007_All_Electricity_cmd)+4))
+		{
+			for(i=0;i<5;i++)
+			{
+				if(recvBuf[i] == 0x68){
+					start_flag = i;
+					break;
+				}
+			}
+
+			if(i > 4){
+				return (-1);
+			}
+
+			if((Count-start_flag) != (sizeof(Mt_645_2007_All_Electricity_cmd)+4))
+			{
+				return (-1);
+			}
+
+			if((Meter_645_cs(&recvBuf[start_flag], Count-start_flag-2)) == recvBuf[Count-2])
+			{
+				if((recvBuf[start_flag] == 0x68)&&(recvBuf[Count-1] == 0x16))
+				{//起始符，结束符正确				
+					AddSun0x33(&recvBuf[start_flag + Dlt645_Read_ID0], 8, 2);//减33h       Cost=1=+33,其它=-33	
+					for(i=0;i<8;i++)
+					{
+						printf("---recvBuf[start_flag + Dlt645_Read_ID0 + i] =%0x \n",recvBuf[start_flag + Dlt645_Read_ID0 + i]);
+					}
+					
+					if((recvBuf[start_flag+Dlt645_Read_ID0] == 0x00)&&(recvBuf[start_flag+Dlt645_Read_ID1] == 0x00)&&(recvBuf[start_flag+Dlt645_Read_ID2] == 0xD1)&&(recvBuf[start_flag+Dlt645_Read_ID3] == 0x00))
+					{//标识符正确
+
+						*meter_now_All_KWH = (((recvBuf[start_flag + Dlt645_Read_ID3 + 4])<<24)|((recvBuf[start_flag + Dlt645_Read_ID3 + 3])<<16)|((recvBuf[start_flag + Dlt645_Read_ID3 + 2])<<8)|(recvBuf[start_flag + Dlt645_Read_ID3 + 1]))/10;
+														 
+						return (0);//抄收数据正确
+					}
+				}
+			}
+		}
+		//printf("All_kwh_read Count=%02d\n",Count);
+		return (-1);
+}
 //读总电量
 static int All_kwh_read(UINT32 *meter_now_All_KWH, int fd, unsigned char *addr)
 {
@@ -802,7 +878,12 @@ static void Meter_Read_Write_Task(void)
 		meter_connect2 = 0;
     if(Globa_1->Charger_param.System_Type != 3){//不是壁挂的
 		//--------------------------- 1号电表 ------------------------------------
-  		Ret = All_kwh_read(&meter_now_KWH, fd, &Globa_1->Charger_param.Power_meter_addr1[0]);//读电量
+			if(Globa_1->Charger_param.meter_config_flag == 2)	
+			{
+  		  Ret = All_kwh_read_New(&meter_now_KWH, fd, &Globa_1->Charger_param.Power_meter_addr1[0]);//读电量，3位小数
+			}else{
+			  Ret = All_kwh_read(&meter_now_KWH, fd, &Globa_1->Charger_param.Power_meter_addr1[0]);//读电量	
+			}
   		if(Ret == -1){
   		}else if(Ret == 0){
       	meter_connect1 = 1;
@@ -831,14 +912,18 @@ static void Meter_Read_Write_Task(void)
 			    Globa_2->meter_Current_V = meter_Current_V;
 				}
 			}*/
-			
-			if(Dc_shunt_Set_meter_flag_1 == 1){ //下发电表分流器量程
-			  Dc_shunt_Set_meter(Globa_1->Charger_param.DC_Shunt_Range, fd, &Globa_1->Charger_param.Power_meter_addr1[0], 1);
-				usleep(200000);//200ms
-				if((Globa_1->Charger_param.System_Type == 0)||(Globa_1->Charger_param.System_Type == 4)){//同时充电
-					Dc_shunt_Set_meter(Globa_2->Charger_param.DC_Shunt_Range, fd, &Globa_2->Charger_param.Power_meter_addr2[0], 2);
+			if(Globa_1->Charger_param.meter_config_flag == 1)	
+			{
+				if(Dc_shunt_Set_meter_flag_1 == 1){ //下发电表分流器量程
+					Dc_shunt_Set_meter(Globa_1->Charger_param.DC_Shunt_Range, fd, &Globa_1->Charger_param.Power_meter_addr1[0], 1);
 					usleep(200000);//200ms
+					if((Globa_1->Charger_param.System_Type == 0)||(Globa_1->Charger_param.System_Type == 4)){//同时充电
+						Dc_shunt_Set_meter(Globa_2->Charger_param.DC_Shunt_Range, fd, &Globa_2->Charger_param.Power_meter_addr2[0], 2);
+						usleep(200000);//200ms
+					}
 				}
+			}else{
+				Dc_shunt_Set_meter_flag_1 = 0;
 			}
 
   		if(meter_connect1 == 0){
@@ -877,7 +962,14 @@ static void Meter_Read_Write_Task(void)
 		  
 			if((Globa_1->Charger_param.System_Type == 0 )||(Globa_1->Charger_param.System_Type == 4 )){//双枪的时候{//双枪同时充电的时候才需要
 				//--------------------------- 2号电表 ------------------------------------
-				Ret = All_kwh_read(&meter_now_KWH, fd, &Globa_2->Charger_param.Power_meter_addr2[0]);//读电量
+				if(Globa_1->Charger_param.meter_config_flag == 2)	
+				{
+					Ret = All_kwh_read_New(&meter_now_KWH, fd, &Globa_2->Charger_param.Power_meter_addr2[0]);//读电量，3位小数
+				}else{
+					Ret = All_kwh_read(&meter_now_KWH, fd, &Globa_2->Charger_param.Power_meter_addr2[0]);//读电量	
+				}
+				
+				//Ret = All_kwh_read(&meter_now_KWH, fd, &Globa_2->Charger_param.Power_meter_addr2[0]);//读电量
 				if(Ret == -1){
 				}else if(Ret == 0){
 					meter_connect2 = 1;
@@ -899,12 +991,17 @@ static void Meter_Read_Write_Task(void)
 					meter_connect2 = 1;
 					Globa_2->meter_Current_V = meter_Current_V;
 				}*/
-			
-				if(Dc_shunt_Set_meter_flag_2 == 1){ //下发电表分流器量程
-					Dc_shunt_Set_meter(Globa_1->Charger_param.DC_Shunt_Range, fd, &Globa_1->Charger_param.Power_meter_addr1[0], 1);
-					usleep(200000);//200ms
-					Dc_shunt_Set_meter(Globa_2->Charger_param.DC_Shunt_Range, fd, &Globa_2->Charger_param.Power_meter_addr2[0], 2);
-					usleep(200000);//200ms
+		    if(Globa_1->Charger_param.meter_config_flag == 1)	
+				{
+					
+					if(Dc_shunt_Set_meter_flag_2 == 1){ //下发电表分流器量程
+						Dc_shunt_Set_meter(Globa_1->Charger_param.DC_Shunt_Range, fd, &Globa_1->Charger_param.Power_meter_addr1[0], 1);
+						usleep(200000);//200ms
+						Dc_shunt_Set_meter(Globa_2->Charger_param.DC_Shunt_Range, fd, &Globa_2->Charger_param.Power_meter_addr2[0], 2);
+						usleep(200000);//200ms
+					}
+			  }else{
+					Dc_shunt_Set_meter_flag_2 = 0;
 				}
 
 				if(meter_connect2 == 0){
