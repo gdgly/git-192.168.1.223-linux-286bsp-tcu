@@ -34,9 +34,17 @@
 #include "common.h"
 #include "InDTU332W_Driver.h"
 #include "../lock/Carlock_task.h"
-
+#include "kernel_list.h"
 
 unsigned char manual_key[8]={0x30,0x31,0x32,0x33,0x34,0x35,0x36,0x37};
+typedef struct _Busy_dataMsgNode
+{
+    struct list_head glist;
+    int count;
+    int Busy_Need_Up_id;
+    ISO8583_AP_charg_busy_Frame busy_data;
+    pthread_mutex_t lock;
+}Busy_dataMsgNode;
 
 ISO8583_APP_Struct ISO8583_App_Struct;
 Alarm_Info_Get    alarm_info_get;
@@ -594,6 +602,106 @@ int Select_Busy_Need_Up(ISO8583_AP_charg_busy_Frame *frame, unsigned int *up_num
 	return -1;
 }
 
+//查询到有需要上传的交易记录插入到队列中
+int Select_Busy_Need_Up_intoMsgNode(Busy_dataMsgNode *Busy_dataMsgList)
+{
+	sqlite3 *db=NULL;
+	char *zErrMsg = NULL;
+	int rc;
+	int nrow = 0, ncolumn = 0;
+	int cnt=0,i =0;
+	char **azResult = NULL;
+
+	int id = 0;
+
+	char sql[512];
+  ISO8583_AP_charg_busy_Frame *frame = calloc(1,sizeof(ISO8583_AP_charg_busy_Frame));
+  
+	if(frame == NULL)//表示申请空间异常，
+	{
+		return -1;
+	}
+	rc = sqlite3_open_v2(F_CHARGER_BUSY_COMPLETE_DB, &db,
+								     	 SQLITE_OPEN_NOMUTEX|
+									     SQLITE_OPEN_SHAREDCACHE|
+									     SQLITE_OPEN_READWRITE,
+									     NULL);
+	if(rc){
+		//printf("Can't create F_CHARGER_BUSY_COMPLETE_DB database: %s\n", sqlite3_errmsg(db));
+		sqlite3_close(db);
+		free(frame);
+		return -1;
+	}
+
+	sprintf(sql, "SELECT * FROM Charger_Busy_Complete_Data WHERE Busy_SN != '00000000000000000000' AND card_sn != '0000000000000000' AND up_num < '%d' ;", MAX_NUM_BUSY_UP_TIME);
+	
+	if(SQLITE_OK == sqlite3_get_table(db, sql, &azResult, &nrow, &ncolumn, NULL)){
+		//printf("nrow = %d,ncolumn =%d \n",nrow,ncolumn);
+	  for(i =0;i<nrow;i++){
+		  if(azResult[ncolumn*1+0 + ncolumn*i] != NULL){//2行1列
+			  memset(frame,0,sizeof(ISO8583_AP_charg_busy_Frame));
+			  id = atoi(azResult[ncolumn*1+ 0 + ncolumn*i]);
+				memcpy(&frame->card_sn[0], azResult[ncolumn*1+1 + ncolumn*i], sizeof(frame->card_sn));
+				memcpy(&frame->flag[0], azResult[ncolumn*1+2 + ncolumn*i], sizeof(frame->flag));
+				memcpy(&frame->rmb[0], azResult[ncolumn*1+3 + ncolumn*i], sizeof(frame->rmb));
+				memcpy(&frame->kwh[0], azResult[ncolumn*1+4 + ncolumn*i], sizeof(frame->kwh));
+				memcpy(&frame->server_rmb[0], azResult[ncolumn*1+5 + ncolumn*i], sizeof(frame->server_rmb));
+				memcpy(&frame->total_rmb[0], azResult[ncolumn*1+6 + ncolumn*i], sizeof(frame->total_rmb));
+				memcpy(&frame->type[0], azResult[ncolumn*1+7 + ncolumn*i], sizeof(frame->type));
+				memcpy(&frame->Serv_Type[0], azResult[ncolumn*1+8 + ncolumn*i], sizeof(frame->Serv_Type));
+				memcpy(&frame->Busy_SN[0], azResult[ncolumn*1+9 + ncolumn*i], sizeof(frame->Busy_SN));
+				memcpy(&frame->last_rmb[0], azResult[ncolumn*1+10 + ncolumn*i], sizeof(frame->last_rmb));
+				memcpy(&frame->ter_sn[0], azResult[ncolumn*1+11 + ncolumn*i], sizeof(frame->ter_sn));
+				memcpy(&frame->start_kwh[0], azResult[ncolumn*1+12 + ncolumn*i], sizeof(frame->start_kwh));
+				memcpy(&frame->end_kwh[0], azResult[ncolumn*1+13 + ncolumn*i], sizeof(frame->end_kwh));
+				memcpy(&frame->rmb_kwh[0], azResult[ncolumn*1+14 + ncolumn*i], sizeof(frame->rmb_kwh));
+
+			
+				memcpy(&frame->sharp_rmb_kwh[0], azResult[ncolumn*1+15 + ncolumn*i], sizeof(frame->sharp_rmb_kwh));
+				memcpy(&frame->sharp_allrmb[0], azResult[ncolumn*1+16 + ncolumn*i], sizeof(frame->sharp_allrmb));
+				memcpy(&frame->peak_rmb_kwh[0], azResult[ncolumn*1+17 + ncolumn*i], sizeof(frame->peak_rmb_kwh));
+				memcpy(&frame->peak_allrmb[0], azResult[ncolumn*1+18 + ncolumn*i], sizeof(frame->peak_allrmb));
+				memcpy(&frame->flat_rmb_kwh[0], azResult[ncolumn*1+19 + ncolumn*i], sizeof(frame->flat_rmb_kwh));
+				memcpy(&frame->flat_allrmb[0], azResult[ncolumn*1+20 + ncolumn*i], sizeof(frame->flat_allrmb));
+				memcpy(&frame->valley_rmb_kwh[0], azResult[ncolumn*1+21 + ncolumn*i], sizeof(frame->valley_rmb_kwh));
+				memcpy(&frame->valley_allrmb[0], azResult[ncolumn*1+22 + ncolumn*i], sizeof(frame->valley_allrmb));
+				
+				memcpy(&frame->sharp_rmb_kwh_Serv[0], azResult[ncolumn*1+23 + ncolumn*i], sizeof(frame->sharp_rmb_kwh_Serv));
+				memcpy(&frame->sharp_allrmb_Serv[0], azResult[ncolumn*1+24 + ncolumn*i], sizeof(frame->sharp_allrmb_Serv));
+				memcpy(&frame->peak_rmb_kwh_Serv[0], azResult[ncolumn*1+25 + ncolumn*i], sizeof(frame->peak_rmb_kwh_Serv));
+				memcpy(&frame->peak_allrmb_Serv[0], azResult[ncolumn*1+26 + ncolumn*i], sizeof(frame->peak_allrmb_Serv));
+				memcpy(&frame->flat_rmb_kwh_Serv[0], azResult[ncolumn*1+27 + ncolumn*i], sizeof(frame->flat_rmb_kwh_Serv));
+				memcpy(&frame->flat_allrmb_Serv[0], azResult[ncolumn*1+28 + ncolumn*i], sizeof(frame->flat_allrmb_Serv));
+				memcpy(&frame->valley_rmb_kwh_Serv[0], azResult[ncolumn*1+29 + ncolumn*i], sizeof(frame->valley_rmb_kwh_Serv));
+				memcpy(&frame->valley_allrmb_Serv[0], azResult[ncolumn*1+30 + ncolumn*i], sizeof(frame->valley_allrmb_Serv));
+				
+				memcpy(&frame->end_time[0], azResult[ncolumn*1+31 + ncolumn*i], sizeof(frame->end_time));
+				memcpy(&frame->car_sn[0], azResult[ncolumn*1+32 + ncolumn*i], sizeof(frame->car_sn));
+				memcpy(&frame->start_time[0], azResult[ncolumn*1+33 + ncolumn*i], sizeof(frame->start_time));
+				memcpy(&frame->ConnectorId[0], azResult[ncolumn*1+34 + ncolumn*i], sizeof(frame->ConnectorId));
+				memcpy(&frame->End_code[0], azResult[ncolumn*1+35 + ncolumn*i], sizeof(frame->End_code));
+
+        pthread_mutex_lock(&Busy_dataMsgList->lock);
+        Busy_dataMsgNode *node = (Busy_dataMsgNode *)calloc(1, sizeof(Busy_dataMsgNode));
+        if (node)
+        {
+						node->Busy_Need_Up_id = id;
+            memcpy(&node->busy_data, frame, sizeof(ISO8583_AP_charg_busy_Frame));
+            list_add_tail(&node->glist, &Busy_dataMsgList->glist);
+            Busy_dataMsgList->count++;
+						//printf("Busy_dataMsgList->count = %d,node->Busy_Need_Up_id =%d \n",Busy_dataMsgList->count,node->Busy_Need_Up_id);
+				  	//printf("node->busy_data.start_time = %.14s,node->busy_data.end_time =%.14s \n",node->busy_data.start_time,node->busy_data.end_time);
+        }
+        pthread_mutex_unlock(&Busy_dataMsgList->lock);
+		  }
+		}
+	}
+	sqlite3_free_table(azResult);
+  sqlite3_close(db);
+	free(frame);
+	return 0;
+}
+
 int Set_Busy_UP_num(int id, unsigned int up_num)//修改数据库该条充电记录的上传标志--//并清除锁卡记录
 {
 	sqlite3 *db=NULL;
@@ -774,7 +882,7 @@ int Select_NO_Over_Record(int id,int up_num)
 
 	//sprintf(sql, "SELECT MAX(ID) FROM Charger_Busy_Complete_Data WHERE id = '%d' AND up_num = '%d' OR up_num = '%d';",id,85,102);
 	//sprintf(sql, "SELECT MAX(ID) FROM Charger_Busy_Complete_Data WHERE id = '%d' AND (up_num = 85 OR up_num = 102);",id);
-	sprintf(sql, "SELECT MAX(ID) FROM Charger_Busy_Complete_Data WHERE id = '%d' AND (up_num = 85 OR up_num = 102) AND up_num != '%d';",id,up_num);
+	sprintf(sql, "SELECT MAX(ID) FROM Charger_Busy_Complete_Data WHERE id = '%d' AND up_num = '%d';",id,up_num);
 
 	if(SQLITE_OK == sqlite3_get_table(db, sql, &azResult, &nrow, &ncolumn, NULL)){
 		if(azResult[ncolumn*1+0] != NULL){//2行1列
@@ -1107,6 +1215,7 @@ int Select_Car_Stop_NO_Over_Record(int id,int up_num)
 	return -1;
 }
 
+
 //设置主位元比特值为1
 static void SetPrimaryBitmap(unsigned char* Bitmap,unsigned char bit_index)
 {	
@@ -1180,6 +1289,7 @@ int ISO8583_AP_Get_SN_Sent(int fd)// 充电终端业务流水号获取
 	if(len != (sizeof(ISO8583_Head_Frame)+sizeof(ISO8583_AP_Get_SN_Frame))){//如果发送不成功
 		return (-1);
 	}else{
+	  COMM_RUN_LogOut("send 消息标识符 %.4s:",Head_Frame->MessgTypeIdent);  
 		return (0);
 	}
 }
@@ -1289,6 +1399,7 @@ int ISO8583_AP_charg_busy_sent(int fd, ISO8583_AP_charg_busy_Frame *busy_data)//
 	if(len != (sizeof(ISO8583_Head_Frame)+sizeof(ISO8583_AP_charg_busy_Frame))){//如果发送不成功
 		return (-1);
 	}else{
+		COMM_RUN_LogOut("send 消息标识符 %.4s:",Head_Frame->MessgTypeIdent);  
 		return (0);
 	}
 }
@@ -1306,6 +1417,7 @@ int ISO8583_Charger_Busy_Deal(unsigned int length,unsigned char *buf)
 	
 	if(length == (sizeof(ISO8583_Head_Frame)+sizeof(ISO8583_AP_Resp_Frame))){//表明客户端有数据发送过来，作相应接受处理
 		if(0 == memcmp(&Head_Frame->MessgTypeIdent[0], "1011", sizeof(Head_Frame->MessgTypeIdent))){
+			//printf("1011   ===== ISO8583_App_Struct.ISO8583_Busy_Need_Up_falg =%d %0x \n",ISO8583_App_Struct.ISO8583_Busy_Need_Up_falg,AP_Resp_Frame->flag[1]);
 			if((AP_Resp_Frame->flag[0] == '0')&&((AP_Resp_Frame->flag[1] == '0')||(AP_Resp_Frame->flag[1] == '5'))){
 				if(ISO8583_App_Struct.ISO8583_Busy_Need_Up_falg == 1){
 				   ISO8583_App_Struct.ISO8583_Busy_Need_Up_falg = 2;
@@ -1957,6 +2069,7 @@ int ISO8583_AP_Heart_Charging_Sent(int fd,int gunflg)
 	if(len != (sizeof(ISO8583_Head_Frame)+sizeof(ISO8583_AP_Heart_Charging_Frame))){//如果发送不成功
 		return (-1);
 	}else{
+		COMM_RUN_LogOut("send 消息标识符 %.4s:",Head_Frame->MessgTypeIdent);  
 		return (0);
 	}
 }
@@ -2035,6 +2148,7 @@ int ISO8583_AP_Heart_NoCharging_Sent(int fd,int gunflg)
 	if(len != (sizeof(ISO8583_Head_Frame)+sizeof(ISO8583_AP_Heart_NoCharging_Frame))){//如果发送不成功
 		return (-1);
 	}else{
+		COMM_RUN_LogOut("send 消息标识符 %.4s:",Head_Frame->MessgTypeIdent);  
 		return (0);
 	}
 }
@@ -2308,6 +2422,7 @@ int ISO8583_AP_Heart_Charging_Sent_01(int fd)
 	if(len != (sizeof(ISO8583_Head_Frame)+sizeof(ISO8583_AP_Heart_Frame_01))){//如果发送不成功
 		return (-1);
 	}else{
+		COMM_RUN_LogOut("send 消息标识符 %.4s:",Head_Frame->MessgTypeIdent);  
 		return (0);
 	}
 }
@@ -2385,6 +2500,7 @@ int ISO8583_AP_Heart_NOchargeSent_01(int fd)
 	if(len != (sizeof(ISO8583_Head_Frame)+sizeof(ISO8583_AP_Heart_NOchargeFrame_01))){//如果发送不成功
 		return (-1);
 	}else{
+		COMM_RUN_LogOut("send 消息标识符 %.4s:",Head_Frame->MessgTypeIdent);  
 		return (0);
 	}
 }
@@ -2830,6 +2946,7 @@ int ISO8583_AP_Heart_ChargeSent_04(int fd,int gun_no)
 	if(len != (sizeof(ISO8583_Head_Frame)+sizeof(ISO8583_AP_Heart_Frame_04))){//如果发送不成功
 		return (-1);
 	}else{
+		COMM_RUN_LogOut("send 消息标识符 %.4s:",Head_Frame->MessgTypeIdent);  
 		return (0);
 	}
 }
@@ -2916,6 +3033,7 @@ int ISO8583_AP_Heart_NOchargeSent_04(int fd,int gun_no)
 	if(len != (sizeof(ISO8583_Head_Frame)+sizeof(ISO8583_AP_Heart_NOchargeFrame_04))){//如果发送不成功
 		return (-1);
 	}else{
+		COMM_RUN_LogOut("send 消息标识符 %.4s:",Head_Frame->MessgTypeIdent);  
 		return (0);
 	}
 }
@@ -3159,6 +3277,7 @@ int ISO8583_AP_Random_Sent(int fd)
 	if(len != (sizeof(ISO8583_Head_Frame)+sizeof(ISO8583_AP_Get_Random_Frame))){//如果发送不成功
 		return (-1);
 	}else{
+		COMM_RUN_LogOut("send 消息标识符 %.4s:",Head_Frame->MessgTypeIdent);  
 		return (0);
 	}
 }
@@ -3267,6 +3386,7 @@ int ISO8583_AP_Key_Sent(int fd)
 	if(len != (sizeof(ISO8583_Head_Frame)+sizeof(ISO8583_AP_Get_Key_Frame))){//如果发送不成功
 		return (-1);
 	}else{
+		COMM_RUN_LogOut("send 消息标识符 %.4s:",Head_Frame->MessgTypeIdent);  
 		return (0);
 	}
 }
@@ -3424,6 +3544,7 @@ int ISO8583_alarm_Sent(int fd, Alarm_Info_Get *alarm_data)
 	if(len != (sizeof(ISO8583_Head_Frame)+offset+5)){//如果发送不成功
 		return (-1);
 	}else{
+	  COMM_RUN_LogOut("send 消息标识符 %.4s:",Head_Frame->MessgTypeIdent);  
 		return (0);
 	}
 }
@@ -4227,6 +4348,7 @@ int ISO8583_Battery_Parameter_Sent(int fd,int GUN_NO)
 	if(len != (sizeof(ISO8583_Head_Frame)+sizeof(ISO8583_Battery_Parameter_Request_Frame))){//如果发送不成功
 		return (-1);
 	}else{
+		COMM_RUN_LogOut("send 消息标识符 %.4s:",Head_Frame->MessgTypeIdent);  
 		return (0);
 	}
 }
@@ -4354,6 +4476,7 @@ int ISO8583_BMS_Real_Data_Sent(int fd,int gun_no)
 	if(len != (sizeof(ISO8583_Head_Frame)+sizeof(ISO8583_BMS_Real_Data_Request_Frame))){//如果发送不成功
 		return (-1);
 	}else{
+		COMM_RUN_LogOut("send 消息标识符 %.4s:",Head_Frame->MessgTypeIdent);  
 		return (0);
 	}
 }
@@ -4512,7 +4635,8 @@ int ISO8583_AP_APP_Sent(int fd, unsigned int flag,int gun)
 			AP_APP_Sent_1_falg[0] = 0; //表示发送成功则清除标志
 		  AP_APP_Sent_1_falg[1] = 0; //表示发送成功则清除标志
 		}
-		if(DEBUGLOG) COMM_RUN_LogOut("充电桩反馈充电启动/停止数据:枪号:%d  结果：%d",gun+1,flag);  
+		if(DEBUGLOG) COMM_RUN_LogOut("充电桩反馈充电启动/停止数据:枪号:%d  结果：%d APP_ID:%.16s",gun+1,flag,AP_Frame->ID);  
+		COMM_RUN_LogOut("send 消息标识符 %.4s:",Head_Frame->MessgTypeIdent);  
 		return (0);
 	}
 }
@@ -4544,7 +4668,7 @@ int ISO8583_Heart_APP_Rece_Deal(int length, unsigned char *buf)
 			time(&Rcev_current_now);
 		  Rcev_pre_time = Rcev_current_now;
 			if(length == (sizeof(ISO8583_Head_Frame) + sizeof(ISO8583_AP_APP_Contol_Frame))){
-			 if(DEBUGLOG) COMM_RUN_LogOut("APP下发启动停止充电数据:命令:%x 枪号:%x ",APP_Contol_Frame->start[1],APP_Contol_Frame->num[1]);  
+			 if(DEBUGLOG) COMM_RUN_LogOut("APP下发启动停止充电数据:命令:%x 枪号:%x appID：%.16s",APP_Contol_Frame->start[1],APP_Contol_Frame->num[1],APP_Contol_Frame->ID);  
 				if((APP_Contol_Frame->start[0] == '0')&&(APP_Contol_Frame->start[1] == '1')){//启动充电
 					if(APP_Contol_Frame->num[1] == '1'){ //第一把枪
 						if(0 != memcmp(&tmp[0], &APP_Contol_Frame->MD5[0], sizeof(APP_Contol_Frame->MD5))){
@@ -4556,11 +4680,10 @@ int ISO8583_Heart_APP_Rece_Deal(int length, unsigned char *buf)
 						}else if(Globa_1->gun_link != 1){
 							flag = 0x03;//03：未插枪
 							sendfalg = 0;
-						}else if((Globa_1->App.APP_start == 1)&&(0 != memcmp(&Globa_1->App.ID, &APP_Contol_Frame->ID[0], sizeof(Globa_1->App.ID)))){
-						//else if(Globa_1->App.APP_start == 1){
+						}else if((Globa_1->App.APP_start == 1)&&((0 != memcmp(&Globa_1->App.ID, &APP_Contol_Frame->ID[0], sizeof(Globa_1->App.ID)))||(0 != memcmp(&Globa_1->App.busy_SN[0], &APP_Contol_Frame->Busy_SN[0], sizeof(Globa_1->App.busy_SN))))){//用户号和业务流水号不一样的时候启动不了
 							flag = 0x04;//04：充电桩已被使用，无法充电
 							sendfalg = 0;
-						}else if((Globa_1->App.APP_start == 1)&&(0 == memcmp(&Globa_1->App.ID, &APP_Contol_Frame->ID[0], sizeof(Globa_1->App.ID)))){//同一个账号，则反馈成功
+						}else if((Globa_1->App.APP_start == 1)&&(0 == memcmp(&Globa_1->App.ID, &APP_Contol_Frame->ID[0], sizeof(Globa_1->App.ID)))&&(0 == memcmp(&Globa_1->App.busy_SN[0], &APP_Contol_Frame->Busy_SN[0], sizeof(Globa_1->App.busy_SN)))){//同一个账号,并且业务流水号一样则直接反馈正常
 							flag = 0x00;//04：充电桩已被同一个账号启用，反馈成功
 							sendfalg = 1;
 						}else if((Globa_1->Error_system != 0)||(Globa_1->Electric_pile_workstart_Enable == 1)){
@@ -4585,7 +4708,7 @@ int ISO8583_Heart_APP_Rece_Deal(int length, unsigned char *buf)
 						}
 						//if(ret >= 0){
 						 if(DEBUGLOG) COMM_RUN_LogOut("APP下发启动停止充电数据:命令:%x 枪号:%x  结果：%d AP_APP_Sent_1_falg[0] = %d",APP_Contol_Frame->start[1],APP_Contol_Frame->num[1],flag,AP_APP_Sent_1_falg[0]);  
-							if(flag == 0){//无异常，可以正常充电
+							if((flag == 0)&&(Globa_1->App.APP_start == 0)){//无异常，可以正常充电,防止再次赋值
 									sprintf(&tmp[0], "%.8s", &APP_Contol_Frame->data[0]);
 								if(APP_Contol_Frame->type[2] == '1'){
 									Globa_1->App.APP_charge_kwh = atoi(&tmp[0]);
@@ -4607,7 +4730,7 @@ int ISO8583_Heart_APP_Rece_Deal(int length, unsigned char *buf)
 									Globa_1->BMS_Power_V = 0;
 								}
 								if(APP_Contol_Frame->APP_Start_Account_type[1] == '1' ){
-									Globa_1->APP_Start_Account_type = 1;
+									Globa_1->APP_Start_Account_type = 0;//1;
 								}else{
 									Globa_1->APP_Start_Account_type = 0;
 								}
@@ -4643,10 +4766,10 @@ int ISO8583_Heart_APP_Rece_Deal(int length, unsigned char *buf)
 						}else if(Globa_2->gun_link != 1){
 							flag = 0x03;//03：未插枪
 							sendfalg = 0;
-						}else if((Globa_2->App.APP_start == 1)&&(0 != memcmp(&Globa_2->App.ID, &APP_Contol_Frame->ID[0], sizeof(Globa_2->App.ID)))){
+						}else if((Globa_2->App.APP_start == 1)&&((0 != memcmp(&Globa_2->App.ID, &APP_Contol_Frame->ID[0], sizeof(Globa_2->App.ID)))||(0 != memcmp(&Globa_2->App.busy_SN[0], &APP_Contol_Frame->Busy_SN[0], sizeof(Globa_2->App.busy_SN))))){//用户号和业务流水号不一样的时候启动不了
 							flag = 0x04;//04：充电桩已被使用，无法充电
 							sendfalg = 0;
-						}else if((Globa_2->App.APP_start == 1)&&(0 == memcmp(&Globa_2->App.ID, &APP_Contol_Frame->ID[0], sizeof(Globa_2->App.ID)))){//同一个账号，则反馈成功
+						}else if((Globa_2->App.APP_start == 1)&&(0 == memcmp(&Globa_2->App.ID, &APP_Contol_Frame->ID[0], sizeof(Globa_2->App.ID)))&&(0 == memcmp(&Globa_2->App.busy_SN[0], &APP_Contol_Frame->Busy_SN[0], sizeof(Globa_2->App.busy_SN)))){//同一个账号,并且业务流水号一样则直接反馈正常
 							flag = 0x00;//04：充电桩已被同一个账号启用，反馈成功
 							sendfalg = 1;
 						}else if((Globa_2->Error_system != 0)||(Globa_2->Electric_pile_workstart_Enable == 1)){
@@ -4673,7 +4796,7 @@ int ISO8583_Heart_APP_Rece_Deal(int length, unsigned char *buf)
 							AP_APP_Sent_2_falg[0] = 1;
 						}
 					//	if(ret >= 0){
-						if(flag == 0){//无异常，可以正常充电
+					 if((flag == 0)&&(Globa_2->App.APP_start == 0)){//无异常，可以正常充电,防止再次赋值
 							if(APP_Contol_Frame->BMS_Power_V[1] == '2' ){
 								Globa_2->BMS_Power_V = 1;
 							}else{
@@ -4681,7 +4804,7 @@ int ISO8583_Heart_APP_Rece_Deal(int length, unsigned char *buf)
 							}
 								
 							if(APP_Contol_Frame->APP_Start_Account_type[1] == '1' ){
-								Globa_2->APP_Start_Account_type = 1;
+								Globa_2->APP_Start_Account_type = 0;//1;
 							}else{
 								Globa_2->APP_Start_Account_type = 0;
 							}
@@ -4712,8 +4835,20 @@ int ISO8583_Heart_APP_Rece_Deal(int length, unsigned char *buf)
 				}else if((APP_Contol_Frame->start[0] == '0')&&(APP_Contol_Frame->start[1] == '2')){//停止充电
 					if(0 != memcmp(&tmp[0], &APP_Contol_Frame->MD5[0], sizeof(APP_Contol_Frame->MD5))){
 						flag = 0x01;//01：MAC校验失败
+						if((APP_Contol_Frame->num[1] == '2'))
+						{
+							flag_gun = 2;
+						}else{
+							flag_gun = 1;
+						}
 					}else if(0 != memcmp(&APP_Contol_Frame->ter_sn[0], &Globa_1->Charger_param.SN[0], sizeof(APP_Contol_Frame->ter_sn))){
 						flag = 0x02;//02：充电桩序列号不对应
+						if((APP_Contol_Frame->num[1] == '2'))
+						{
+							flag_gun = 2;
+						}else{
+							flag_gun = 1;
+						}
 					}else if((0 == memcmp(&APP_Contol_Frame->ID[0], &Globa_1->App.ID[0], sizeof(APP_Contol_Frame->ID)))&&((APP_Contol_Frame->num[1] == '1'))){
 						flag = 0;
 						flag_gun = 1;
@@ -4722,16 +4857,24 @@ int ISO8583_Heart_APP_Rece_Deal(int length, unsigned char *buf)
 						flag_gun = 2;
 					}else{
 						flag = 0x05;//05：非当前用户，无法取消充电
-						flag_gun = 0;
+						if((APP_Contol_Frame->num[1] == '2'))
+						{
+							flag_gun = 2;
+						}else{
+							flag_gun = 1;
+						}
 					}
-					
+	
 					if(flag_gun == 2){
+						memcpy(&ISO8583_App_Struct.App_ID_2[0], &APP_Contol_Frame->ID[0], sizeof(ISO8583_App_Struct.App_ID_2));
 						AP_APP_Sent_2_falg[1] = flag; //表示接收到密钥到反馈信息
 						AP_APP_Sent_2_falg[0] = 1; //表示接收到密钥到反馈信息
 					}else{
+						memcpy(&ISO8583_App_Struct.App_ID_1[0], &APP_Contol_Frame->ID[0], sizeof(ISO8583_App_Struct.App_ID_1));
 						AP_APP_Sent_1_falg[1] = flag; //表示接收到密钥到反馈信息
 						AP_APP_Sent_1_falg[0] = 1; //表示接收到密钥到反馈信息
 					}
+					
 					if(DEBUGLOG) COMM_RUN_LogOut("APP下发停止充电数据:命令:%x 枪号:%x 结果：%d",APP_Contol_Frame->start[1],APP_Contol_Frame->num[1],flag);  
 					if((Globa_1->App.APP_start == 1)&&(flag == 0)&&(flag_gun == 1)){//已经开启充电
 						Globa_1->App.APP_start = 0;
@@ -4758,10 +4901,10 @@ int ISO8583_Heart_APP_Rece_Deal(int length, unsigned char *buf)
 						}else if(Globa_1->gun_link != 1){
 							flag = 0x03;//03：未插枪
 							sendfalg = 0;
-						}else if((Globa_1->App.APP_start == 1)&&(0 != memcmp(&Globa_1->App.ID, &APP_Contol_Private_Frame->ID[0], sizeof(Globa_1->App.ID)))){
-							sendfalg = 0;
+						}else if((Globa_1->App.APP_start == 1)&&((0 != memcmp(&Globa_1->App.ID, &APP_Contol_Frame->ID[0], sizeof(Globa_1->App.ID)))||(0 != memcmp(&Globa_1->App.busy_SN[0], &APP_Contol_Frame->Busy_SN[0], sizeof(Globa_1->App.busy_SN))))){//用户号和业务流水号不一样的时候启动不了
 							flag = 0x04;//04：充电桩已被使用，无法充电
-						}else if((Globa_1->App.APP_start == 1)&&(0 == memcmp(&Globa_1->App.ID, &APP_Contol_Private_Frame->ID[0], sizeof(Globa_1->App.ID)))){//同一个账号，则反馈成功
+							sendfalg = 0;
+						}else if((Globa_1->App.APP_start == 1)&&(0 == memcmp(&Globa_1->App.ID, &APP_Contol_Frame->ID[0], sizeof(Globa_1->App.ID)))&&(0 == memcmp(&Globa_1->App.busy_SN[0], &APP_Contol_Frame->Busy_SN[0], sizeof(Globa_1->App.busy_SN)))){//同一个账号,并且业务流水号一样则直接反馈正常
 							flag = 0x00;//04：充电桩已被同一个账号启用，反馈成功
 							sendfalg = 1;
 						}else if((Globa_1->Error_system != 0)||(Globa_1->Electric_pile_workstart_Enable == 1)){
@@ -4783,7 +4926,7 @@ int ISO8583_Heart_APP_Rece_Deal(int length, unsigned char *buf)
 						}else{
 							AP_APP_Sent_1_falg[0] = 1;
 						}	
-						if(flag == 0){//无异常，可以正常充电
+						if((flag == 0)&&(Globa_1->App.APP_start == 0)){//无异常，可以正常充电
 							sprintf(&tmp[0], "%.8s", &APP_Contol_Private_Frame->data[0]);
 							if(APP_Contol_Private_Frame->type[2] == '1'){
 								Globa_1->App.APP_charge_kwh = atoi(&tmp[0]);
@@ -4880,7 +5023,7 @@ int ISO8583_Heart_APP_Rece_Deal(int length, unsigned char *buf)
 									Globa_1->BMS_Power_V = 0;
 								}
 							if(APP_Contol_Private_Frame->APP_Start_Account_type[1] == '1' ){
-								Globa_1->APP_Start_Account_type = 1;
+								Globa_1->APP_Start_Account_type = 0;//1;
 							}else{
 								Globa_1->APP_Start_Account_type = 0;
 							}
@@ -4902,11 +5045,11 @@ int ISO8583_Heart_APP_Rece_Deal(int length, unsigned char *buf)
 						}else if(Globa_2->gun_link != 1){
 							flag = 0x03;//03：未插枪
 							sendfalg = 0;
-						}else if((Globa_2->App.APP_start == 1)&&(0 != memcmp(&Globa_2->App.ID, &APP_Contol_Private_Frame->ID[0], sizeof(Globa_2->App.ID)))){
+						}else if((Globa_2->App.APP_start == 1)&&((0 != memcmp(&Globa_2->App.ID, &APP_Contol_Frame->ID[0], sizeof(Globa_2->App.ID)))||(0 != memcmp(&Globa_2->App.busy_SN[0], &APP_Contol_Frame->Busy_SN[0], sizeof(Globa_2->App.busy_SN))))){//用户号和业务流水号不一样的时候启动不了
 							flag = 0x04;//04：充电桩已被使用，无法充电
 							sendfalg = 0;
-						}else if((Globa_2->App.APP_start == 1)&&(0 == memcmp(&Globa_2->App.ID, &APP_Contol_Private_Frame->ID[0], sizeof(Globa_2->App.ID)))){
-							flag = 0x00;//04：充电桩已被使用，无法充电
+						}else if((Globa_2->App.APP_start == 1)&&(0 == memcmp(&Globa_2->App.ID, &APP_Contol_Frame->ID[0], sizeof(Globa_2->App.ID)))&&(0 == memcmp(&Globa_2->App.busy_SN[0], &APP_Contol_Frame->Busy_SN[0], sizeof(Globa_2->App.busy_SN)))){//同一个账号,并且业务流水号一样则直接反馈正常
+							flag = 0x00;//04：充电桩已被同一个账号启用，反馈成功
 							sendfalg = 1;
 						}else if((Globa_2->Error_system != 0)||(Globa_2->Electric_pile_workstart_Enable == 1)){
 							flag = 0x06;//06：充电桩故障无法充电
@@ -4928,7 +5071,7 @@ int ISO8583_Heart_APP_Rece_Deal(int length, unsigned char *buf)
 							AP_APP_Sent_2_falg[0] = 1;
 						}
 							
-						if(flag == 0){//无异常，可以正常充电
+						if((flag == 0)&&(Globa_2->App.APP_start == 0)){//无异常，可以正常充电
 							sprintf(&tmp[0], "%.8s", &APP_Contol_Private_Frame->data[0]);
 							if(APP_Contol_Private_Frame->type[2] == '1'){
 								Globa_2->App.APP_charge_kwh = atoi(&tmp[0]);
@@ -5029,7 +5172,7 @@ int ISO8583_Heart_APP_Rece_Deal(int length, unsigned char *buf)
 								Globa_2->BMS_Power_V = 0;
 							}
 							if(APP_Contol_Private_Frame->APP_Start_Account_type[1] == '1' ){
-								Globa_2->APP_Start_Account_type = 1;
+								Globa_2->APP_Start_Account_type = 0;//1;
 							}else{
 								Globa_2->APP_Start_Account_type = 0;
 							}
@@ -5044,8 +5187,20 @@ int ISO8583_Heart_APP_Rece_Deal(int length, unsigned char *buf)
 				}else if((APP_Contol_Private_Frame->start[0] == '0')&&(APP_Contol_Private_Frame->start[1] == '2')){//停止充电
 					if(0 != memcmp(&tmp[0], &APP_Contol_Private_Frame->MD5[0], sizeof(APP_Contol_Private_Frame->MD5))){
 						flag = 0x01;//01：MAC校验失败
+						if((APP_Contol_Private_Frame->num[1] == '2'))
+						{
+							flag_gun = 2;
+						}else{
+							flag_gun = 1;
+						}
 					}else if(0 != memcmp(&APP_Contol_Private_Frame->ter_sn[0], &Globa_1->Charger_param.SN[0], sizeof(APP_Contol_Private_Frame->ter_sn))){
 						flag = 0x02;//02：充电桩序列号不对应
+						if((APP_Contol_Private_Frame->num[1] == '2'))
+						{
+							flag_gun = 2;
+						}else{
+							flag_gun = 1;
+						}
 					}else if((0 == memcmp(&APP_Contol_Private_Frame->ID[0], &Globa_1->App.ID[0], sizeof(APP_Contol_Private_Frame->ID)))&&(APP_Contol_Private_Frame->num[1] == '1')){
 						flag = 0;
 						flag_gun = 1;
@@ -5054,14 +5209,21 @@ int ISO8583_Heart_APP_Rece_Deal(int length, unsigned char *buf)
 						flag_gun = 2;
 					}else{
 						flag = 0x05;//05：非当前用户，无法取消充电
-						flag_gun = 0;
+						if((APP_Contol_Private_Frame->num[1] == '2'))
+						{
+							flag_gun = 2;
+						}else{
+							flag_gun = 1;
+						}
 					}
-	
+
 					if(flag_gun == 2){
+						memcpy(&ISO8583_App_Struct.App_ID_2[0], &APP_Contol_Private_Frame->ID[0], sizeof(ISO8583_App_Struct.App_ID_2));
 						AP_APP_Sent_2_falg[1] = flag; //表示接收到密钥到反馈信息
 						AP_APP_Sent_2_falg[0] = 1; //表示接收到密钥到反馈信息
 
 					}else{
+					  memcpy(&ISO8583_App_Struct.App_ID_1[0], &APP_Contol_Private_Frame->ID[0], sizeof(ISO8583_App_Struct.App_ID_1));
 						AP_APP_Sent_1_falg[1] = flag; //表示接收到密钥到反馈信息
 						AP_APP_Sent_1_falg[0] = 1; //表示接收到密钥到反馈信息
 					}
@@ -5181,6 +5343,7 @@ int ISO8583_User_Card_Sent_Deal(int fd)
 	if(len != (sizeof(ISO8583_Head_Frame)+sizeof(ISO8583_User_Card_Frame))){//如果发送不成功
 		return (-1);
 	}else{
+		COMM_RUN_LogOut("send 消息标识符 %.4s:",Head_Frame->MessgTypeIdent);  
 		return (0);
 	}
 }
@@ -5477,6 +5640,7 @@ int Fill_ISO8583_1120_VIN_Auth_Frame(int fd)
 	if(len != (sizeof(ISO8583_Head_Frame)+sizeof(ISO8583_VIN_Auth_Frame))){//如果发送不成功
 		return (-1);
 	}else{
+		COMM_RUN_LogOut("send 消息标识符 %.4s:",Head_Frame->MessgTypeIdent);  
 		return (0);
 	}
 }
@@ -5537,6 +5701,7 @@ unsigned short Fill_AP1130_Sent_Deal(int fd)
 	if(len != (sizeof(ISO8583_Head_Frame)+sizeof(ISO8583_AP1130_Frame))){//如果发送不成功
 		return (-1);
 	}else{
+		COMM_RUN_LogOut("send 消息标识符 %.4s:",Head_Frame->MessgTypeIdent);  
 		return (0);
 	}
 }
@@ -5593,6 +5758,7 @@ int ISO8583_AP_req_card_sent(int fd, int num)
 	if(len != (sizeof(ISO8583_Head_Frame)+sizeof(ISO8583_AP_Get_INVAL_CARD_Frame))){//如果发送不成功
 		return (-1);
 	}else{
+		COMM_RUN_LogOut("send 消息标识符 %.4s:",Head_Frame->MessgTypeIdent);  
 		return (0);
 	}
 }
@@ -5712,6 +5878,7 @@ int ISO8583_AP_req_price_sent(int fd,int price_type)
 	if(len != (sizeof(ISO8583_Head_Frame)+sizeof(ISO8583_AP_Get_Price_Frame))){//如果发送不成功
 		return (-1);
 	}else{
+		COMM_RUN_LogOut("send 消息标识符 %.4s:",Head_Frame->MessgTypeIdent);  
 		return (0);
 	}
 }
@@ -6090,6 +6257,7 @@ int ISO8583_User_Card_Unlock_Request_sent(int fd)
 	if(len != (sizeof(ISO8583_Head_Frame)+sizeof(ISO8583_User_Card_Unlock_Request_Frame))){//如果发送不成功
 		return (-1);
 	}else{
+		COMM_RUN_LogOut("send 消息标识符 %.4s:",Head_Frame->MessgTypeIdent);  
 		return (0);
 	}
 }
@@ -6222,6 +6390,7 @@ int ISO8583_User_Card_Unlock_Data_Request_sent(int fd)
 	if(len != (sizeof(ISO8583_Head_Frame)+sizeof(ISO8583_User_Card_Unlock_Data_Request_Frame))){//如果发送不成功
 		return (-1);
 	}else{
+		COMM_RUN_LogOut("send 消息标识符 %.4s:",Head_Frame->MessgTypeIdent);  
 		return (0);
 	}
 }
@@ -6297,6 +6466,7 @@ int ISO8583_3041_sent(int fd,int flag)
 	if(len != (sizeof(ISO8583_Head_Frame)+sizeof(ISO8583_3041_Resp_Frame))){//如果发送不成功
 		return (-1);
 	}else{
+		COMM_RUN_LogOut("send 消息标识符 %.4s:",Head_Frame->MessgTypeIdent);  
 		return (0);
 	}
 }
@@ -6349,6 +6519,7 @@ int ISO8583_AP1060_Request_sent(int fd,UINT32 data_block_num_want)
 	if(len != (sizeof(ISO8583_Head_Frame)+sizeof(ISO8583_APUPDATE_Frame))){//如果发送不成功
 		return (-1);
 	}else{
+		COMM_RUN_LogOut("send 消息标识符 %.4s:",Head_Frame->MessgTypeIdent);  
 		return (0);
 	}
 }
@@ -6482,6 +6653,7 @@ int ISO8583_AP1070_Request_sent(int fd)
 	if(len != (sizeof(ISO8583_Head_Frame)+sizeof(ISO8583_AP1070_Frame))){//如果发送不成功
 		return (-1);
 	}else{
+		COMM_RUN_LogOut("send 消息标识符 %.4s:",Head_Frame->MessgTypeIdent);  
 		return (0);
 	}
 }
@@ -6545,6 +6717,7 @@ int ISO8583_3051_Send_Battery_Data_sent(int fd,int gunno,int falg)
 	if(len != (sizeof(ISO8583_Head_Frame)+sizeof(ISO8583_3051_Send_Battery_Frame))){//如果发送不成功
 		return (-1);
 	}else{
+		COMM_RUN_LogOut("send 消息标识符 %.4s:",Head_Frame->MessgTypeIdent);  
 		return (0);
 	}
 }
@@ -6665,6 +6838,7 @@ int ISO8583_Car_lock_Request_sent(int fd,int falg, char* User_Card)
 	if(len != (sizeof(ISO8583_Head_Frame)+sizeof(ISO8583_Car_lock_Data_Respone_Frame))){//如果发送不成功
 		return (-1);
 	}else{
+		COMM_RUN_LogOut("send 消息标识符 %.4s:",Head_Frame->MessgTypeIdent);  
 		return (0);
 	}
 }
@@ -6918,6 +7092,7 @@ int ISO8583_Light_control_Request_sent(int fd,int falg)
 	if(len != (sizeof(ISO8583_Head_Frame)+sizeof(ISO8583_Light3061_Data_Respone_Frame))){//如果发送不成功
 		return (-1);
 	}else{
+		COMM_RUN_LogOut("send 消息标识符 %.4s:",Head_Frame->MessgTypeIdent);  
 		return (0);
 	}
 }
@@ -7028,6 +7203,7 @@ int ISO8583_Car_Stop_busy_sent(int fd, ISO8583_Car_Stop_busy_Struct *busy_data)/
 	if(len != (sizeof(ISO8583_Head_Frame)+sizeof(ISO8583_Car_Stop_busy_Struct))){//如果发送不成功
 		return (-1);
 	}else{
+		COMM_RUN_LogOut("send 消息标识符 %.4s:",Head_Frame->MessgTypeIdent);  
 		return (0);
 	}
 }
@@ -7498,6 +7674,8 @@ int ISO8583_Heart_Task(void)
 	unsigned char Update_Electric_Charge_Pile_falg = 0;
 	unsigned char Update_Charger_falg =0;
 	char buf[100] = {0}, buf2[100]= {0}, md5[100]= {0};
+ 
+  Busy_dataMsgNode *Busy_dataMsgList=NULL;
 							
 	UINT32 g_InDTU332W_conn_count = 0,GET_InDTU332W_CSQ_ST_Count = 0;
 	UINT32 ISO8583_Random_Count = 0;
@@ -7569,6 +7747,7 @@ int ISO8583_Heart_Task(void)
 		ISO8583_App_Struct.Heart_TCP_state = 0x00;
 		if(DEBUGLOG) COMM_RUN_LogOut("DTU访问模式:IP = %x %x %x %x ",hexip[0],hexip[1],hexip[2],hexip[3]);  
 	}
+	
 	pthread_mutex_lock(&busy_db_pmutex);
 	Set_0XB4_Busy_ID();
 	if (dev_cfg.dev_para.car_lock_num != 0)
@@ -7578,6 +7757,12 @@ int ISO8583_Heart_Task(void)
 	pthread_mutex_unlock(&busy_db_pmutex);
 	Globa_1->have_price_change = 1;
 	prctl(PR_SET_NAME,(unsigned long)"ISO8583_Heart_Task");//设置线程名字 
+
+  Busy_dataMsgList=calloc(1,sizeof(Busy_dataMsgNode));
+  Busy_dataMsgList->count=0;
+  INIT_LIST_HEAD(&Busy_dataMsgList->glist);
+  pthread_mutex_init(&Busy_dataMsgList->lock,NULL);
+
 
 	while(1){
 	//	usleep(100000);//10ms
@@ -7914,6 +8099,8 @@ int ISO8583_Heart_Task(void)
 					InDTU332W_Cfg_st = LOGIN_InDTU332W_ST;//ACTIVE_InDTU332W_ST;
 					InDTU332W_cfg_wait_ack = 0;
 					ISO8583_Random_Count = 0;
+				  COMM_RUN_LogOut("进行签到请求:");  
+
 				}
 				have_hart_outtime_count = 0;
 				break;
@@ -7921,6 +8108,7 @@ int ISO8583_Heart_Task(void)
 			case 0x02:{//签到请求
 			  if(abs(current_now - pre_hart_time) >= 10){
 					ret = ISO8583_AP_Random_Sent(ISO8583_App_Struct.Heart_Socket_fd);//签到请求 发送上行数据
+
 					pre_hart_time = current_now; //等待10S继续发下次
 					//printf("-----ISO8583_Random_Deal ok 签到请求 ISO8583_Random_Count= %d\n",ISO8583_Random_Count);
 					if(ret < 0){//连接不正常
@@ -8043,6 +8231,7 @@ int ISO8583_Heart_Task(void)
 					}
 					break;
 				}
+				
 			  if(Alarm_Send_flag == 0){//表示初始的
 					if((abs(current_now - Alarm_Sent_time)>= 10)&&(ISO8583_App_Struct.ISO8583_Alarm_Rcev_falg == 0)){
 						Alarm_Sent_time = current_now;
@@ -8086,7 +8275,8 @@ int ISO8583_Heart_Task(void)
 									sleep(5);
 								}else{
 									sleep(5);
-									if(ISO8583_DEBUG)printf("ISO8583_alarm_Sent fail\n");
+									if(DEBUGLOG)COMM_RUN_LogOut("ISO8583_alarm_Sent fail");
+									
 									ISO8583_App_Struct.Heart_TCP_state = 0x01;
 									Globa_1->have_hart = 0;
 									close(ISO8583_App_Struct.Heart_Socket_fd);
@@ -8114,7 +8304,8 @@ int ISO8583_Heart_Task(void)
 									sleep(5);
 								}else{
 									sleep(5);
-									if(ISO8583_DEBUG)printf("ISO8583_alarm_Sent fail\n");
+									if(DEBUGLOG)COMM_RUN_LogOut("ISO8583_alarm_Sent --02 fail");
+
 									ISO8583_App_Struct.Heart_TCP_state = 0x01;
 									Globa_1->have_hart = 0;
 									close(ISO8583_App_Struct.Heart_Socket_fd);
@@ -8127,15 +8318,15 @@ int ISO8583_Heart_Task(void)
 				
         if((Globa_1->Charger_param.System_Type <= 1 )||(Globa_1->Charger_param.System_Type == 4 )){//双枪的时候
 				  if((Globa_1->charger_start == 1)||(Globa_1->App.APP_start == 1)||(Globa_2->charger_start == 1)||(Globa_2->App.APP_start == 1)||(ISO8583_App_Struct.old_gun_state[0] != Globa_1->gun_state)||(ISO8583_App_Struct.old_gun_state[1] != Globa_2->gun_state)||(ISO8583_App_Struct.old_Car_Lock_state[0] != Get_Cardlock_state(0))||(ISO8583_App_Struct.old_Car_Lock_state[1] != Get_Cardlock_state(1))){
-						Hart_time_Value = 5;
+						Hart_time_Value = Globa_1->Charger_param.heartbeat_busy_period;
 					}else{
-					  Hart_time_Value = 30;
+					  Hart_time_Value = Globa_1->Charger_param.heartbeat_idle_period;
 					}
 				}else if((Globa_1->Charger_param.System_Type >= 2 )&&(Globa_1->Charger_param.System_Type < 4 )){
 				  if((Globa_1->charger_start == 1)||(Globa_1->App.APP_start == 1)||(ISO8583_App_Struct.old_gun_state[0] != Globa_1->gun_state)||(ISO8583_App_Struct.old_Car_Lock_state[0] != Get_Cardlock_state(0))){
-						Hart_time_Value = 5;
+						Hart_time_Value = Globa_1->Charger_param.heartbeat_busy_period;
 					}else{
-					  Hart_time_Value = 30;
+					  Hart_time_Value = Globa_1->Charger_param.heartbeat_idle_period;
 					}
 				}
 				
@@ -8151,7 +8342,9 @@ int ISO8583_Heart_Task(void)
 							sleep(5);
 						}else{
 							sleep(5);
-							if(ISO8583_DEBUG)printf("发送心跳帧 lost connection\n");
+			
+							if(DEBUGLOG)COMM_RUN_LogOut("发送心跳帧 lost connection");
+
 							ISO8583_App_Struct.Heart_TCP_state = 0x01;
 							Globa_1->have_hart = 0;
 							close(ISO8583_App_Struct.Heart_Socket_fd);
@@ -8177,7 +8370,7 @@ int ISO8583_Heart_Task(void)
 								sleep(5);
 							}else{
 								sleep(5);
-								if(ISO8583_DEBUG)printf("发送心跳帧 lost connection\n");
+								if(DEBUGLOG)COMM_RUN_LogOut("发送心跳帧 卡片验证/VIN 失败");
 								ISO8583_App_Struct.Heart_TCP_state = 0x01;
 								Globa_1->have_hart = 0;
 								close(ISO8583_App_Struct.Heart_Socket_fd);
@@ -8189,6 +8382,8 @@ int ISO8583_Heart_Task(void)
 					if(abs(current_now - Enterprise_Card_Sent) >= 5){ //5秒一次心跳
 					  Enterprise_Card_Sent = current_now;
 						ret = Fill_AP1130_Sent_Deal(ISO8583_App_Struct.Heart_Socket_fd);//发送企业号启动成功
+						if(DEBUGLOG)COMM_RUN_LogOut("发送企业号启动：Globa_1->Enterprise_Card_flag =%d Globa_2->Enterprise_Card_flag =%d ",Globa_1->Enterprise_Card_flag,Globa_2->Enterprise_Card_flag);
+
 						if(ret < 0){//连接不正常
 							if(Globa_1->Charger_param.Serial_Network == 1){//直接走c串口所以不需要初始化
 								ISO8583_App_Struct.Heart_TCP_state = 0x00;
@@ -8199,6 +8394,8 @@ int ISO8583_Heart_Task(void)
 							}else{
 								sleep(5);
 								if(ISO8583_DEBUG)printf("发送心跳帧 lost connection\n");
+								if(DEBUGLOG)COMM_RUN_LogOut("发送企业号启动失败");
+
 								ISO8583_App_Struct.Heart_TCP_state = 0x01;
 								Globa_1->have_hart = 0;
 								close(ISO8583_App_Struct.Heart_Socket_fd);
@@ -8240,7 +8437,8 @@ int ISO8583_Heart_Task(void)
 								sleep(5);
 							}else{
 								sleep(5);
-								if(ISO8583_DEBUG)printf("ISO8583_Battery_Parameter_Sent failed lost connection\n");
+								if(DEBUGLOG)COMM_RUN_LogOut("1# ISO8583_Battery_Parameter_Sent failed lost connection");
+
 								ISO8583_App_Struct.Heart_TCP_state = 0x01;
 								Globa_1->have_hart = 0;
 								Battery_Parameter_Flag_1 = 0;
@@ -8262,7 +8460,8 @@ int ISO8583_Heart_Task(void)
 								sleep(5);
 							}else{
 								sleep(5);
-								if(ISO8583_DEBUG)printf("ISO8583_Battery_Parameter_Sent failed lost connection\n");
+								if(DEBUGLOG)COMM_RUN_LogOut("2#ISO8583_Battery_Parameter_Sent2 failed lost connection");
+
 								ISO8583_App_Struct.Heart_TCP_state = 0x01;
 								Globa_1->have_hart = 0;
 								Battery_Parameter_Flag_2 = 0;
@@ -8288,7 +8487,7 @@ int ISO8583_Heart_Task(void)
 								sleep(5);
 							}else{
 								sleep(5);
-								if(ISO8583_DEBUG)printf("ISO8583_Battery_Parameter_Sent failed lost connection\n");
+								if(DEBUGLOG)COMM_RUN_LogOut("1#ISO8583_BMS_Real_Data failed ");
 								ISO8583_App_Struct.Heart_TCP_state = 0x01;
 								Globa_1->have_hart = 0;
 								Battery_Parameter_Flag_1 = 0;
@@ -8311,7 +8510,7 @@ int ISO8583_Heart_Task(void)
 								sleep(5);
 							}else{
 								sleep(5);
-								if(ISO8583_DEBUG)printf("ISO8583_Battery_Parameter_Sent failed lost connection\n");
+								if(DEBUGLOG)COMM_RUN_LogOut("2#ISO8583_BMS_Real_Data failed ");
 								ISO8583_App_Struct.Heart_TCP_state = 0x01;
 								Globa_1->have_hart = 0;
 								Battery_Parameter_Flag_2 = 0;
@@ -8330,49 +8529,116 @@ int ISO8583_Heart_Task(void)
 					BMS_time = current_now;
 				}
 				
-				if(Globa_1->have_hart == 1){//心跳 正常的时候
-				 //查询流水号				
-					if((abs(current_now - pre_Busy_SN_time) >= 5)&&(ISO8583_App_Struct.ISO8583_Get_SN_falg == 0)){ //3秒一次查询流水号
+			 //查询流水号				
+				if((abs(current_now - pre_Busy_SN_time) >= 5)&&(ISO8583_App_Struct.ISO8583_Get_SN_falg == 0)){ //3秒一次查询流水号
+					pre_Busy_SN_time = current_now;
+					if (dev_cfg.dev_para.car_lock_num != 0)
+					{
+						Busy_SN_TYPE = 1 - Busy_SN_TYPE;
+					}
+					else
+					{
+						Busy_SN_TYPE = 0;
+					}
+					pthread_mutex_lock(&busy_db_pmutex);
+					if (Busy_SN_TYPE == 0) //查询充电流水业务
+					{
+						id = Select_NO_Busy_SN(0);//查询没有流水号的最大记录 ID 值 --充电业务
+					}
+					else 
+					{
+						id = Select_NO_Busy_SN(1);//查询没有流水号的最大记录 ID 值 --停车业务
+					}
+					pthread_mutex_unlock(&busy_db_pmutex);
+					Busy_SN_start_time = current_now;
+					if(id != -1){
+						ISO8583_App_Struct.ISO8583_Get_SN_falg = 1; //表示需要发送数据
+						pre_Busy_SN_time = current_now - 5;
+						if(DEBUGLOG)COMM_RUN_LogOut("表示查询到流水号需要发送数据id=%d",id);
+
+					}
+				}else if(ISO8583_App_Struct.ISO8583_Get_SN_falg != 0){
+					if(abs(current_now - Busy_SN_start_time) >= 10){//10s还没有请求到则重新请求流水号
+						Busy_SN_start_time = current_now;
 						pre_Busy_SN_time = current_now;
-						if (dev_cfg.dev_para.car_lock_num != 0)
+						ISO8583_App_Struct.ISO8583_Get_SN_falg = 0;
+						id = -1;
+					}
+				}
+		 
+				if(id != -1){//表示查询到了没有记录的流水号
+					if((abs(current_now - pre_Busy_SN_time) >= 5)&&(ISO8583_App_Struct.ISO8583_Get_SN_falg == 1)){ //3秒一次查询流水号
+						pre_Busy_SN_time = current_now;
+						ret =  ISO8583_AP_Get_SN_Sent(ISO8583_App_Struct.Heart_Socket_fd);// 充电终端业务流水号获取
+						 if(DEBUGLOG)COMM_RUN_LogOut("表示请求流水号id=%d",id);
+
+						if(ret < 0){//连接不正常
+							if(Globa_1->Charger_param.Serial_Network == 1){//直接走c串口所以不需要初始化
+								ISO8583_App_Struct.Heart_TCP_state = 0x00;
+								InDTU332W_Cfg_st = LOGIN_InDTU332W_ST;//ACTIVE_InDTU332W_ST;
+								InDTU332W_cfg_wait_ack = 0;
+								Globa_1->have_hart = 0;
+								sleep(5);
+							}else{
+								sleep(5);
+							 if(DEBUGLOG)COMM_RUN_LogOut("表示请求流水号失败");
+
+								ISO8583_App_Struct.Heart_TCP_state = 0x01;
+								Globa_1->have_hart = 0;
+								close(ISO8583_App_Struct.Heart_Socket_fd);
+								break;
+							}
+						}
+					}else if (ISO8583_App_Struct.ISO8583_Get_SN_falg == 2){//获取成功
+						pthread_mutex_lock(&busy_db_pmutex);
+						Set_Busy_SN(id, ISO8583_App_Struct.ISO8583_busy_SN_Vlaue,Busy_SN_TYPE);//添加数据库该条充电记录的流水号
+						pthread_mutex_unlock(&busy_db_pmutex);
+						ISO8583_App_Struct.ISO8583_Get_SN_falg = 0;
+						id = -1;
+					}
+				}
+				
+				//充电业务数据上传
+				if((Busy_dataMsgList->count == 0)&&(ISO8583_App_Struct.ISO8583_Busy_Need_Up_falg == 0))//表示发送队列中无数据发送，需要从数据库中插入导队列中，
+				{
+					if((abs(current_now - pre_Busy_Need_Up_time) >= 10)){ //10秒周期性查询是否需要上次记录
+						pre_Busy_Need_Up_time = current_now;
+						pthread_mutex_lock(&busy_db_pmutex);
+						Select_Busy_Need_Up_intoMsgNode(Busy_dataMsgList);//查询需要上传的业务记录的最大 ID 值
+						pthread_mutex_unlock(&busy_db_pmutex);
+						Busy_Need_Up_start_time = current_now;
+						ISO8583_App_Struct.ISO8583_Busy_Need_Up_falg = 0;
+						if(Busy_dataMsgList->count != 0)
 						{
-						  Busy_SN_TYPE = 1 - Busy_SN_TYPE;
+							pre_Busy_Need_Up_time = current_now - 8;
+						}
+					}
+				}else{//从队列中上传数据
+					if((abs(current_now - pre_Busy_Need_Up_time) >= 10)){ //3秒一次查询流水号
+						pre_Busy_Need_Up_time = current_now;
+					
+						pthread_mutex_lock(&Busy_dataMsgList->lock);
+						Busy_dataMsgNode *e = list_entry((&(Busy_dataMsgList->glist))->next, typeof(*e), glist);
+						if (&e->glist != &Busy_dataMsgList->glist)
+						{
+							list_del(&e->glist);
+							Busy_dataMsgList->count--;
 						}
 						else
 						{
-							Busy_SN_TYPE = 0;
+								e = NULL;
+								ISO8583_App_Struct.ISO8583_Busy_Need_Up_falg = 0; //队列中无数据，从新获取数据
 						}
-						pthread_mutex_lock(&busy_db_pmutex);
-						if (Busy_SN_TYPE == 0) //查询充电流水业务
+						pthread_mutex_unlock(&Busy_dataMsgList->lock);
+
+						if (e != NULL)
 						{
-						  id = Select_NO_Busy_SN(0);//查询没有流水号的最大记录 ID 值 --充电业务
-					  }
-						else 
-					  {
-							id = Select_NO_Busy_SN(1);//查询没有流水号的最大记录 ID 值 --停车业务
-						}
-						pthread_mutex_unlock(&busy_db_pmutex);
-						Busy_SN_start_time = current_now;
-						if(id != -1){
-							ISO8583_App_Struct.ISO8583_Get_SN_falg = 1; //表示需要发送数据
-							pre_Busy_SN_time = current_now - 5;
-							if(ISO8583_DEBUG)printf("表示查询到流水号需要发送数据 =%d\n",id);
-						}
-				  }else if(ISO8583_App_Struct.ISO8583_Get_SN_falg != 0){
-						if(abs(current_now - Busy_SN_start_time) >= 10){//10s还没有请求到则重新请求流水号
-							Busy_SN_start_time = current_now;
-							pre_Busy_SN_time = current_now;
-							ISO8583_App_Struct.ISO8583_Get_SN_falg = 0;
-							id = -1;
-						}
-					}
-			 
-					if(id != -1){//表示查询到了没有记录的流水号
-						if((abs(current_now - pre_Busy_SN_time) >= 5)&&(ISO8583_App_Struct.ISO8583_Get_SN_falg == 1)){ //3秒一次查询流水号
-						  pre_Busy_SN_time = current_now;
-						  if(ISO8583_DEBUG)printf("表示请求流水号 =%d\n",id);
-						  ret =  ISO8583_AP_Get_SN_Sent(ISO8583_App_Struct.Heart_Socket_fd);// 充电终端业务流水号获取
-						  if(ret < 0){//连接不正常
+							Busy_Need_Up_id = e->Busy_Need_Up_id;
+              ISO8583_App_Struct.ISO8583_Busy_Need_Up_falg = 1;
+							if(DEBUGLOG)COMM_RUN_LogOut("准备上传的业务记录Busy_Need_Up_id =%d Busy_dataMsgList->count =%d",Busy_Need_Up_id ,Busy_dataMsgList->count);
+							ret =  ISO8583_AP_charg_busy_sent(ISO8583_App_Struct.Heart_Socket_fd, &e->busy_data);//充电业务数据上传
+							free(e);
+							if(ret < 0){//连接不正常
 								if(Globa_1->Charger_param.Serial_Network == 1){//直接走c串口所以不需要初始化
 									ISO8583_App_Struct.Heart_TCP_state = 0x00;
 									InDTU332W_Cfg_st = LOGIN_InDTU332W_ST;//ACTIVE_InDTU332W_ST;
@@ -8381,51 +8647,91 @@ int ISO8583_Heart_Task(void)
 									sleep(5);
 								}else{
 									sleep(5);
-									if(ISO8583_DEBUG)printf("发送心跳帧 lost connection\n");
+									if(DEBUGLOG)printf("发送心跳帧 lost connection\n");
 									ISO8583_App_Struct.Heart_TCP_state = 0x01;
 									Globa_1->have_hart = 0;
 									close(ISO8583_App_Struct.Heart_Socket_fd);
 									break;
 								}
-					    }
-						}else if (ISO8583_App_Struct.ISO8583_Get_SN_falg == 2){//获取成功
-							if(ISO8583_DEBUG)printf("表示请求流水号 获取成功 =%d\n",id);
-							pthread_mutex_lock(&busy_db_pmutex);
-							Set_Busy_SN(id, ISO8583_App_Struct.ISO8583_busy_SN_Vlaue,Busy_SN_TYPE);//添加数据库该条充电记录的流水号
-							pthread_mutex_unlock(&busy_db_pmutex);
-							ISO8583_App_Struct.ISO8583_Get_SN_falg = 0;
-							id = -1;
+							}
 						}
-					}
-					//充电业务数据上传
-					if((abs(current_now - pre_Busy_Need_Up_time) >= 3)&&(ISO8583_App_Struct.ISO8583_Busy_Need_Up_falg == 0)){ //3秒一次查询流水号
-						pre_Busy_Need_Up_time = current_now;
+					}else if(ISO8583_App_Struct.ISO8583_Busy_Need_Up_falg == 2){//获取成功
 						pthread_mutex_lock(&busy_db_pmutex);
-						Busy_Need_Up_id = Select_Busy_Need_Up(&ISO8583_App_Struct.busy_data, &up_num);//查询需要上传的业务记录的最大 ID 值
+						Set_Busy_UP_num(Busy_Need_Up_id, 0xAA);//标记该条充电记录上传成功
 						pthread_mutex_unlock(&busy_db_pmutex);
-						Busy_Need_Up_start_time = current_now;
-						if(Busy_Need_Up_id != -1){
-							ISO8583_App_Struct.ISO8583_Busy_Need_Up_falg = 1; //表示需要发送数据
-							pre_Busy_Need_Up_time = current_now - 10;
-							if(ISO8583_DEBUG)printf("查询需要上传的业务记录的最大 获取成功 =%d\n",Busy_Need_Up_id);
+						if(DEBUGLOG)COMM_RUN_LogOut("上传成功 Busy_Need_Up_id =%d",Busy_Need_Up_id);
+
+						ISO8583_App_Struct.ISO8583_Busy_Need_Up_falg = 0;
+						int i = 0;
+					   sleep(1);
+						pthread_mutex_lock(&busy_db_pmutex);
+						for(i=0;i<5;i++){
+							if(Select_NO_Over_Record(Busy_Need_Up_id,0xAA) != 0){//表示有没有上传的记录
+								Set_Busy_UP_num(Busy_Need_Up_id, 0xAA);
+								sleep(1);
+							}else{
+								break;
+							}
 						}
-					}else if(ISO8583_App_Struct.ISO8583_Busy_Need_Up_falg != 0){
-						if(abs(current_now - Busy_Need_Up_start_time) >= 10){//10s还没有请求到则重新请求流水号
-							Busy_Need_Up_start_time = current_now;
-							pre_Busy_Need_Up_time = current_now;
-							ISO8583_App_Struct.ISO8583_Busy_Need_Up_falg = 0;
-							Busy_Need_Up_id = -1;
-						  memset(&ISO8583_App_Struct.busy_data, '0', sizeof(ISO8583_App_Struct.busy_data));
+					  pthread_mutex_unlock(&busy_db_pmutex);
+						Busy_Need_Up_id = -1;
+						memset(&ISO8583_App_Struct.busy_data, '0', sizeof(ISO8583_App_Struct.busy_data));
+						pre_Busy_Need_Up_time = current_now - 7; //每次间隔2s上传一次，收到回馈的话
+					}else if(ISO8583_App_Struct.ISO8583_Busy_Need_Up_falg == 3){//获取成功
+						pthread_mutex_lock(&busy_db_pmutex);
+						Set_Busy_UP_num(Busy_Need_Up_id, 0xB4);//标记该条充电记录上传成功
+						pthread_mutex_unlock(&busy_db_pmutex);
+						if(DEBUGLOG)COMM_RUN_LogOut("上传 异常记录成功 Busy_Need_Up_id =%d",Busy_Need_Up_id);
+            sleep(1);
+						int i = 0;
+						pthread_mutex_lock(&busy_db_pmutex);
+						for(i=0;i<5;i++){
+							if(Select_NO_Over_Record(Busy_Need_Up_id,0xB4) != 0){//表示有没有上传的记录
+								Set_Busy_UP_num(Busy_Need_Up_id, 0xB4);
+								sleep(1);
+							}else{
+								break;
+							}
+						}
+					  pthread_mutex_unlock(&busy_db_pmutex);
+						ISO8583_App_Struct.ISO8583_Busy_Need_Up_falg = 0;
+						Busy_Need_Up_id = -1;
+						memset(&ISO8583_App_Struct.busy_data, '0', sizeof(ISO8583_App_Struct.busy_data));
+						pre_Busy_Need_Up_time = current_now - 7; //每次间隔2s上传一次，收到回馈的话
+					}							
+				}
+				
+				if (dev_cfg.dev_para.car_lock_num != 0)
+				{
+					//停车业务数据上传
+					if((abs(current_now - pre_Car_Busy_Need_Up_time) >= 3)&&(ISO8583_App_Struct.ISO8583_Car_Stop_Need_Up_falg == 0)){ 
+						pre_Car_Busy_Need_Up_time = current_now;
+						pthread_mutex_lock(&busy_db_pmutex);
+						Car_Stop_Busy_Need_Up_id = Select_Car_Stop_Busy_Need_Up(&ISO8583_App_Struct.Car_Stop_busy_data, &up_num);//查询需要上传的业务记录的最大 ID 值
+						pthread_mutex_unlock(&busy_db_pmutex);
+						Car_Stop_Busy_Need_Up_start_time = current_now;
+						if(Car_Stop_Busy_Need_Up_id != -1){
+							ISO8583_App_Struct.ISO8583_Car_Stop_Need_Up_falg = 1; //表示需要发送数据
+							pre_Car_Busy_Need_Up_time = current_now - 10;
+							if(ISO8583_DEBUG)printf("查询需要上传的停车业务记录的最大 获取成功 =%d\n",Car_Stop_Busy_Need_Up_id);
+						}
+					}else if(ISO8583_App_Struct.ISO8583_Car_Stop_Need_Up_falg != 0){
+						if(abs(current_now - Car_Stop_Busy_Need_Up_start_time) >= 10){//10s还没有请求到则重新请求流水号
+							Car_Stop_Busy_Need_Up_start_time = current_now;
+							pre_Car_Busy_Need_Up_time = current_now;
+							ISO8583_App_Struct.ISO8583_Car_Stop_Need_Up_falg = 0;
+							Car_Stop_Busy_Need_Up_id = -1;
+							memset(&ISO8583_App_Struct.Car_Stop_busy_data, '0', sizeof(ISO8583_App_Struct.Car_Stop_busy_data));
 						}
 					}
 
-					if(Busy_Need_Up_id != -1){//表示查询到了没有记录的流水号
-						if((abs(current_now - pre_Busy_Need_Up_time) >= 10)&&(ISO8583_App_Struct.ISO8583_Busy_Need_Up_falg == 1)){ //3秒一次查询流水号
-							pre_Busy_Need_Up_time = current_now;
-							if(ISO8583_DEBUG)printf("表示需要上传的记录 =%d\n",Busy_Need_Up_id);
-							ret =  ISO8583_AP_charg_busy_sent(ISO8583_App_Struct.Heart_Socket_fd, &ISO8583_App_Struct.busy_data);//充电业务数据上传
+					if(Car_Stop_Busy_Need_Up_id != -1){//表示查询到了没有记录的流水号
+						if((abs(current_now - pre_Car_Busy_Need_Up_time) >= 10)&&(ISO8583_App_Struct.ISO8583_Car_Stop_Need_Up_falg == 1)){ //3秒一次查询流水号
+							pre_Car_Busy_Need_Up_time = current_now;
+							if(ISO8583_DEBUG)printf("表示上传的记录 =%d\n",Car_Stop_Busy_Need_Up_id);
+							ret =  ISO8583_Car_Stop_busy_sent(ISO8583_App_Struct.Heart_Socket_fd, &ISO8583_App_Struct.Car_Stop_busy_data);//停车业务数据上传
 							if(ret < 0){//连接不正常
-							  memset(&ISO8583_App_Struct.busy_data, '0', sizeof(ISO8583_App_Struct.busy_data));
+								memset(&ISO8583_App_Struct.Car_Stop_busy_data, '0', sizeof(ISO8583_App_Struct.Car_Stop_busy_data));
 								if(Globa_1->Charger_param.Serial_Network == 1){//直接走c串口所以不需要初始化
 									ISO8583_App_Struct.Heart_TCP_state = 0x00;
 									InDTU332W_Cfg_st = LOGIN_InDTU332W_ST;//ACTIVE_InDTU332W_ST;
@@ -8441,125 +8747,42 @@ int ISO8583_Heart_Task(void)
 									break;
 								}
 							}
-						}else if(ISO8583_App_Struct.ISO8583_Busy_Need_Up_falg == 2){//获取成功
-							if(ISO8583_DEBUG)printf("表示上传的记录 获取成功 =%d\n",Busy_Need_Up_id);
+						}else if(ISO8583_App_Struct.ISO8583_Car_Stop_Need_Up_falg == 2){//获取成功
+							if(ISO8583_DEBUG)printf("表示上传的记录 获取成功 =%d\n",Car_Stop_Busy_Need_Up_id);
 							pthread_mutex_lock(&busy_db_pmutex);
-							Set_Busy_UP_num(Busy_Need_Up_id, 0xAA);//标记该条充电记录上传成功
+							Set_Car_Stop_Busy_UP_num(Car_Stop_Busy_Need_Up_id,0xAA);//标记该条充电记录上传成功
 							pthread_mutex_unlock(&busy_db_pmutex);
-							if(DEBUGLOG) GLOBA_RUN_LogOut("记录上送成功id：%d",Busy_Need_Up_id);  
-							ISO8583_App_Struct.ISO8583_Busy_Need_Up_falg = 0;
+							ISO8583_App_Struct.ISO8583_Car_Stop_Need_Up_falg = 0;
 							int i = 0;
 							for(i=0;i<5;i++){
 								sleep(1);
-								if(Select_NO_Over_Record(Busy_Need_Up_id,0xAA)!= -1){//表示有没有上传的记录
-									Set_Busy_UP_num(Busy_Need_Up_id, 0xAA);
+								if(Select_Car_Stop_NO_Over_Record(Car_Stop_Busy_Need_Up_id,0xAA)!= -1){//表示有没有上传的记录
+									Set_Car_Stop_Busy_UP_num(Car_Stop_Busy_Need_Up_id, 0xAA);
 								}
 							}
-							Busy_Need_Up_id = -1;
+							Car_Stop_Busy_Need_Up_id = -1;
 							memset(&ISO8583_App_Struct.busy_data, '0', sizeof(ISO8583_App_Struct.busy_data));
-						}else if(ISO8583_App_Struct.ISO8583_Busy_Need_Up_falg == 3){//获取成功
+						}else if(ISO8583_App_Struct.ISO8583_Car_Stop_Need_Up_falg == 3){//获取成功
 							if(ISO8583_DEBUG)printf("表示上传的记录 异常 获取成功 =%d\n",Busy_Need_Up_id);
 							pthread_mutex_lock(&busy_db_pmutex);
-							Set_Busy_UP_num(Busy_Need_Up_id, 0xB4);//标记该条充电记录上传成功
+							Set_Car_Stop_Busy_UP_num(Car_Stop_Busy_Need_Up_id, 0xB4);//标记该条充电记录上传成功
 							pthread_mutex_unlock(&busy_db_pmutex);
-							if(DEBUGLOG) GLOBA_RUN_LogOut("记录上送异常id：%d",Busy_Need_Up_id);  
 							int i = 0;
 							for(i=0;i<5;i++){
 								sleep(1);
-								if(Select_NO_Over_Record(Busy_Need_Up_id,0xB4)!= -1){//表示有没有上传的记录
-									Set_Busy_UP_num(Busy_Need_Up_id, 0xB4);
+								if(Select_Car_Stop_NO_Over_Record(Car_Stop_Busy_Need_Up_id,0xB4)!= -1){//表示有没有上传的记录
+									Set_Car_Stop_Busy_UP_num(Car_Stop_Busy_Need_Up_id, 0xB4);
 								}
 							}
-							ISO8583_App_Struct.ISO8583_Busy_Need_Up_falg = 0;
-							Busy_Need_Up_id = -1;
-							memset(&ISO8583_App_Struct.busy_data, '0', sizeof(ISO8583_App_Struct.busy_data));
+							ISO8583_App_Struct.ISO8583_Car_Stop_Need_Up_falg = 0;
+							Car_Stop_Busy_Need_Up_id = -1;
+							memset(&ISO8583_App_Struct.Car_Stop_busy_data, '0', sizeof(ISO8583_App_Struct.Car_Stop_busy_data));
 						}							
 					}else{
-					  ISO8583_App_Struct.ISO8583_Busy_Need_Up_falg = 0;
-					}
-				
-					if (dev_cfg.dev_para.car_lock_num != 0)
-					{
-						//停车业务数据上传
-						if((abs(current_now - pre_Car_Busy_Need_Up_time) >= 3)&&(ISO8583_App_Struct.ISO8583_Car_Stop_Need_Up_falg == 0)){ 
-							pre_Car_Busy_Need_Up_time = current_now;
-							pthread_mutex_lock(&busy_db_pmutex);
-							Car_Stop_Busy_Need_Up_id = Select_Car_Stop_Busy_Need_Up(&ISO8583_App_Struct.Car_Stop_busy_data, &up_num);//查询需要上传的业务记录的最大 ID 值
-							pthread_mutex_unlock(&busy_db_pmutex);
-							Car_Stop_Busy_Need_Up_start_time = current_now;
-							if(Car_Stop_Busy_Need_Up_id != -1){
-								ISO8583_App_Struct.ISO8583_Car_Stop_Need_Up_falg = 1; //表示需要发送数据
-								pre_Car_Busy_Need_Up_time = current_now - 10;
-								if(ISO8583_DEBUG)printf("查询需要上传的停车业务记录的最大 获取成功 =%d\n",Car_Stop_Busy_Need_Up_id);
-							}
-						}else if(ISO8583_App_Struct.ISO8583_Car_Stop_Need_Up_falg != 0){
-							if(abs(current_now - Car_Stop_Busy_Need_Up_start_time) >= 10){//10s还没有请求到则重新请求流水号
-								Car_Stop_Busy_Need_Up_start_time = current_now;
-								pre_Car_Busy_Need_Up_time = current_now;
-								ISO8583_App_Struct.ISO8583_Car_Stop_Need_Up_falg = 0;
-								Car_Stop_Busy_Need_Up_id = -1;
-								memset(&ISO8583_App_Struct.Car_Stop_busy_data, '0', sizeof(ISO8583_App_Struct.Car_Stop_busy_data));
-							}
-						}
-
-						if(Car_Stop_Busy_Need_Up_id != -1){//表示查询到了没有记录的流水号
-							if((abs(current_now - pre_Car_Busy_Need_Up_time) >= 10)&&(ISO8583_App_Struct.ISO8583_Car_Stop_Need_Up_falg == 1)){ //3秒一次查询流水号
-								pre_Car_Busy_Need_Up_time = current_now;
-								if(ISO8583_DEBUG)printf("表示上传的记录 =%d\n",Car_Stop_Busy_Need_Up_id);
-								ret =  ISO8583_Car_Stop_busy_sent(ISO8583_App_Struct.Heart_Socket_fd, &ISO8583_App_Struct.Car_Stop_busy_data);//停车业务数据上传
-								if(ret < 0){//连接不正常
-									memset(&ISO8583_App_Struct.Car_Stop_busy_data, '0', sizeof(ISO8583_App_Struct.Car_Stop_busy_data));
-									if(Globa_1->Charger_param.Serial_Network == 1){//直接走c串口所以不需要初始化
-										ISO8583_App_Struct.Heart_TCP_state = 0x00;
-										InDTU332W_Cfg_st = LOGIN_InDTU332W_ST;//ACTIVE_InDTU332W_ST;
-										InDTU332W_cfg_wait_ack = 0;
-										Globa_1->have_hart = 0;
-										sleep(5);
-									}else{
-										sleep(5);
-										if(ISO8583_DEBUG)printf("发送心跳帧 lost connection\n");
-										ISO8583_App_Struct.Heart_TCP_state = 0x01;
-										Globa_1->have_hart = 0;
-										close(ISO8583_App_Struct.Heart_Socket_fd);
-										break;
-									}
-								}
-							}else if(ISO8583_App_Struct.ISO8583_Car_Stop_Need_Up_falg == 2){//获取成功
-								if(ISO8583_DEBUG)printf("表示上传的记录 获取成功 =%d\n",Car_Stop_Busy_Need_Up_id);
-								pthread_mutex_lock(&busy_db_pmutex);
-								Set_Car_Stop_Busy_UP_num(Car_Stop_Busy_Need_Up_id,0xAA);//标记该条充电记录上传成功
-								pthread_mutex_unlock(&busy_db_pmutex);
-								ISO8583_App_Struct.ISO8583_Car_Stop_Need_Up_falg = 0;
-								int i = 0;
-								for(i=0;i<5;i++){
-									sleep(1);
-									if(Select_Car_Stop_NO_Over_Record(Car_Stop_Busy_Need_Up_id,0xAA)!= -1){//表示有没有上传的记录
-										Set_Car_Stop_Busy_UP_num(Car_Stop_Busy_Need_Up_id, 0xAA);
-									}
-								}
-								Car_Stop_Busy_Need_Up_id = -1;
-								memset(&ISO8583_App_Struct.busy_data, '0', sizeof(ISO8583_App_Struct.busy_data));
-							}else if(ISO8583_App_Struct.ISO8583_Car_Stop_Need_Up_falg == 3){//获取成功
-								if(ISO8583_DEBUG)printf("表示上传的记录 异常 获取成功 =%d\n",Busy_Need_Up_id);
-								pthread_mutex_lock(&busy_db_pmutex);
-								Set_Car_Stop_Busy_UP_num(Car_Stop_Busy_Need_Up_id, 0xB4);//标记该条充电记录上传成功
-								pthread_mutex_unlock(&busy_db_pmutex);
-								int i = 0;
-								for(i=0;i<5;i++){
-									sleep(1);
-									if(Select_Car_Stop_NO_Over_Record(Car_Stop_Busy_Need_Up_id,0xB4)!= -1){//表示有没有上传的记录
-										Set_Car_Stop_Busy_UP_num(Car_Stop_Busy_Need_Up_id, 0xB4);
-									}
-								}
-								ISO8583_App_Struct.ISO8583_Car_Stop_Need_Up_falg = 0;
-								Car_Stop_Busy_Need_Up_id = -1;
-								memset(&ISO8583_App_Struct.Car_Stop_busy_data, '0', sizeof(ISO8583_App_Struct.Car_Stop_busy_data));
-							}							
-						}else{
-							ISO8583_App_Struct.ISO8583_Car_Stop_Need_Up_falg = 0;
-						}
+						ISO8583_App_Struct.ISO8583_Car_Stop_Need_Up_falg = 0;
 					}
 				}
+			
 				
 			//	if((Globa_1->QT_Step == 0x02)||(Globa_1->QT_Step == 0x03)||((Globa_2->QT_Step == 0x03)&&((Globa_1->QT_Step == 0x22)||(Globa_1->QT_Step == 0x21)||(Globa_1->QT_Step == 0x25)))){//系统空闲时再上传业务数据
 				
@@ -8569,7 +8792,8 @@ int ISO8583_Heart_Task(void)
 						if(abs(current_now - pre_price_change_time) >= 10){ //3秒一次查询流水号
 							pre_price_change_time = current_now;
 							ret =  ISO8583_AP_req_price_sent(ISO8583_App_Struct.Heart_Socket_fd,0);//发送电价
-					
+							if(DEBUGLOG)COMM_RUN_LogOut("电价数据更新");
+
 							if(ret < 0){//连接不正常
 								if(Globa_1->Charger_param.Serial_Network == 1){//直接走c串口所以不需要初始化
 									ISO8583_App_Struct.Heart_TCP_state = 0x00;
@@ -8579,7 +8803,7 @@ int ISO8583_Heart_Task(void)
 									sleep(5);
 								}else{
 									sleep(5);
-									if(ISO8583_DEBUG)printf("发送心跳帧 lost connection\n");
+									if(DEBUGLOG)COMM_RUN_LogOut("电价数据更新 失败");
 									ISO8583_App_Struct.Heart_TCP_state = 0x01;
 									Globa_1->have_hart = 0;
 									close(ISO8583_App_Struct.Heart_Socket_fd);
@@ -8591,7 +8815,8 @@ int ISO8583_Heart_Task(void)
 						if(abs(current_now - pre_price_change_time) >= 10){ //3秒一次查询流水号
 							pre_price_change_time = current_now;
 							ret =  ISO8583_AP_req_price_sent(ISO8583_App_Struct.Heart_Socket_fd,1);//发送电价
-						
+							if(ISO8583_DEBUG)COMM_RUN_LogOut("获取定时电价数据更新");
+
 						  if(ret < 0){//连接不正常
 								if(Globa_1->Charger_param.Serial_Network == 1){//直接走c串口所以不需要初始化
 									ISO8583_App_Struct.Heart_TCP_state = 0x00;
@@ -8601,7 +8826,7 @@ int ISO8583_Heart_Task(void)
 									sleep(5);
 								}else{
 									sleep(5);
-									if(ISO8583_DEBUG)printf("发送心跳帧 lost connection\n");
+									if(ISO8583_DEBUG)COMM_RUN_LogOut("获取定时电价数据更新 失败");
 									ISO8583_App_Struct.Heart_TCP_state = 0x01;
 									Globa_1->have_hart = 0;
 									close(ISO8583_App_Struct.Heart_Socket_fd);
@@ -8870,6 +9095,8 @@ int ISO8583_Heart_Task(void)
 				  if(abs(current_now - Signals_value_over_time) >= 30){
 			      tx_len = InDTU332W_Status_RD_Frame(dtu_send_buf,TAG_CSQ_ST);
 				    ISO8583_Sent_Data(ISO8583_App_Struct.Heart_Socket_fd , dtu_send_buf, tx_len,0);
+						COMM_RUN_LogOut("send DTU信号请求:");  
+
 					  Signals_value_over_time = current_now;
 				  }
 				}
