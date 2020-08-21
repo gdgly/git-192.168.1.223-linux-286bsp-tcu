@@ -415,7 +415,7 @@ static void remote2tcuMsg_FaultMsgAck(cJSON*obj)
 
 }
 static void remote2tcuMsg_Pwr_Adjust(cJSON *obj) // OK
-{
+{ 
     if(!obj)return;
     T_SPowerCtrl data;
     memset(&data,0,sizeof(data));
