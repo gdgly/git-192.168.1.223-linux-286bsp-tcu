@@ -228,7 +228,7 @@ typedef enum _REMOTE_CMD
     REMOTE2TCU_PARA_REPORT_ACK      = 0x1700,   //参数上报
     REMOTE2TCU_HEART_BEAT           = 0x1701,   //心跳报文=======周期上报                    有应答
     //监控(0x1710-0x172F)
-    REMOTE2TCU_FAULT_MSG_ACK        = 0x1714,   //故障时上报故障信息=========                无应答
+    REMOTE2TCU_FAULT_MSG_ACK        = 0x1714,   //故障时上报故障信息=========              
     //设置(0x1730-0x175F)
     REMOTE2TCU_TIME_SYNC            = 0x1730,   //充电桩时间设置
     REMOTE2TCU_PRICE_SET            = 0x1731,   //费率和时段设置
