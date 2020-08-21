@@ -13,12 +13,13 @@
 *******************************************************************************/
 
 #include    "RemoteComm.h"
-//#include "mongoose.h"
 #include    "cJSON_ext.h"
-//#include "tcu2remote.h"
 #include    "RemoteDataTransform.h"
 #include    "Data.h"
 #include    "TcuComm.h"
+#include    "Queue.h"
+#include    <globalvar.h>
+
 #define TAG "remote2tcu"
 
 static time_t preRemoteConnectTime=0;
@@ -26,15 +27,16 @@ static unsigned short g_PotocolVer = 0x0100;
 
 static void Send2Tcu(int msgId, void *data, int dataSize)
 {
-    SCommEventData cdata;
-    memset(&cdata, 0, sizeof(cdata));
+    QUEUE_MSG msg = { 0 };
 
-    cdata.selfCommVer = g_PotocolVer;
-    cdata.msg_dest_dev_id = REMOTE_DEV_ID;
-    cdata.msg_id = msgId;
-    cdata.msg_data_byte_len = dataSize;
-    memcpy(cdata.msg_data_arry, data, cdata.msg_data_byte_len);
-    DevCallback(REMOTE_DEV_ID, msgId, (void *)&cdata, sizeof(cdata)); //执行回调
+    msg.MsgID = msgId;
+    msg.DataLen = dataSize;
+    msg.pData = (unsigned char *)data;
+
+    if (FALSE == Push_Node(QUEUE_DEV_TCU, &msg))
+    {
+        AppLogOut("%s 插入消息：0x%02X 失败!", TAG, msgId);
+    }
 }
 
 static void remote2tcuMsg_startCharge(cJSON *obj) // ok
@@ -95,8 +97,6 @@ static void remote2tcuMsg_LandLock(cJSON*obj) // ok
 
     Send2Tcu(REMOTE2TCU_LAND_LOCK, &data, sizeof(data));
 }
-
-
 
 static void remote2tcuMsg_VinCharge(cJSON*obj)  // ok
 {
@@ -181,6 +181,10 @@ static void remote2tcuMsg_Price_Set(cJSON *obj) //ok
     if (obj)
     {
         T_SSetChargePrice data;
+        char *p = NULL;
+        char No[10] = { 0 };
+        int i;
+
         memset(&data,0,sizeof(data));
 
         cJSON_GetInt(obj,"version",&data.version);//计费版本
@@ -191,15 +195,19 @@ static void remote2tcuMsg_Price_Set(cJSON *obj) //ok
         cJSON_GetChar(obj,"segNum",&data.priceCount);//费用区间数
 
         cJSON* array = cJSON_GetObjectItem(obj,"priceInfo");
-        int i;
-        for(i=0;i<data.priceCount;i++)
+      
+        for(i=0;i < data.priceCount; i++)
         {
-            char No[10]={0};
+            memset(No, 0x00, sizeof(No));
             snprintf(No,sizeof(No),"%d",i);
-            cJSON_GetBytes(array,No,(char *)&data.price[i],sizeof(T_SChargePrice));//起始时间
-        }
 
-        DataRemote2Tcu(REMOTE2TCU_PRICE_SET, &data, &data, sizeof(data));
+            cJSON_GetBytes(array,No,(char *)&data.price[i],sizeof(T_SChargePrice));//起始时间
+
+            p = (char *)data.price[i].startTime;
+            data.price[i].startTime = *p * 100 + *(p + 1);
+            p = (char *)data.price[i].endTime;
+            data.price[i].endTime = *p * 100 + *(p + 1);
+        }
 
         Send2Tcu(REMOTE2TCU_PRICE_SET, &data, sizeof(data));
     }
@@ -312,6 +320,7 @@ static void remote2tcuMsg_UpdateReq(cJSON*obj)
     cJSON_GetChar(obj,"result",&data.result);
     Send2Tcu(REMOTE2TCU_UPGRADE_REQ, &data, sizeof(data));
 }
+
 static void remote2tcuMsg_GetLog(cJSON*obj)
 {
     T_GenernalAck data;
@@ -326,7 +335,6 @@ static void remote2tcuMsg_Param_Report(cJSON *obj)
     T_GenernalAck data;
     memset(&data,0,sizeof(data));
 
-    //cJSON_GetInt(obj,"gunNo",&data.gunNo);
 
     Send2Tcu(REMOTE2TCU_PARA_REPORT_ACK, &data, sizeof(data));
 }
@@ -374,59 +382,8 @@ static void remote2tcuMsg_SetRemoteSettingsAck(cJSON *obj)
 
 static void remote2tcuMsg_GetSettingsAck(cJSON *obj)
 {
-    //if(!obj)return;
-    //T_ReomteGetSettingsAck data;
-    //memset(&data,0,sizeof(data));
-
-    //cJSON_GetChar(obj, "result", &data.result);
-    //if(data.result == 0)
-    //{
-    //    cJSON_GetInt(obj, "gunNo", &data.devId);
-    //    cJSON_GetInt(obj, "count", &data.count);
-    //    cJSON_GetChar(obj, "type", &data.settingType);
-    //    int i = 0;
-    //    for(i = 0; i < data.count; i++)
-    //    {
-    //        char key[16] = {0};
-    //        char keyValue[32] = {0};
-    //        char valueKey[32] = {0};
-    //        sprintf(key, "key%d", i);
-    //        sprintf(valueKey, "keyValue%d", i);
-    //        cJSON_GetString(obj, key, keyValue, sizeof(keyValue)); //获取参数的key
-    //        if(data.settingType == REMOTE_OTHER_SETTINGS)
-    //        {
-    //            if(!strcmp(keyValue, g_paramKey[PARAM_OCPP_WEBURL])) //OCPP握手需要内容
-    //            {
-    //                strcpy(data.key[i], keyValue);
-    //                cJSON_GetString(obj, valueKey, data.keyValue[i], sizeof(data.keyValue[i]));
-    //            }
-    //            else if(!strcmp(keyValue, g_paramKey[PARAM_OCPP_OFFLINEMODEENABLE])) //界面是否显示离线模式
-    //            {
-    //                strcpy(data.key[i], keyValue);
-    //                cJSON_GetChar(obj, valueKey, &data.keyValue[i][0]);
-    //            }
-    //            else if(!strcmp(keyValue, g_paramKey[PARAM_OCPP_OFFLINEPASSWORD])) //离线模式时候的启动密码
-    //            {
-    //                strcpy(data.key[i], keyValue);
-    //                cJSON_GetString(obj, valueKey, data.keyValue[i], sizeof(data.keyValue[i]));
-    //            }
-    //            else if(!strcmp(keyValue, g_paramKey[PARAM_OCPP_CHARGEPOINTMODEL])) //OCPP握手需要内容
-    //            {
-    //                strcpy(data.key[i], keyValue);
-    //                cJSON_GetString(obj, valueKey, data.keyValue[i], sizeof(data.keyValue[i]));
-    //            }
-    //            else
-    //            {
-    //                AppLogOut("%s 非法key %s", TAG, key);
-    //            }
-    //        }
-    //    }
-    //}
-    //Send2Tcu(REMOTE2TCU_GET_REMOTE_SETTINGS_ACK, &data, sizeof(data));
+  
 }
-
-
-
 
 static void remote2tcuMsg_Heart(cJSON*obj) //ok
 {
@@ -486,9 +443,6 @@ static void remote2tcuMsg_OrderTimeout(cJSON*obj) // ok
 
     Send2Tcu(REMOTE2TCU_ORDER_TIMEOUT_ACK, &data, sizeof(data));
 }
-
-
-
 
 void remote2tcu_MsgParse(char *data,int size)
 {
