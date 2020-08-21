@@ -1,12 +1,13 @@
 #include "PlatProt_2_0.h"
 #include "Queue.h"
-#include "globalvar.h"
+#include <globalvar.h>
 #include "Data.h"
 #include <stdlib.h>
 #include <string.h>
 #include "Deal_Handler.h"
 #include "RemoteComm.h"
 #include "TcuComm.h"
+#include "sgp_RemoteData.h"
 
 /*------------------------------------------------------------------------------
 Section: 外部函数调用声明
@@ -34,12 +35,12 @@ static int                     s_Busy_Need_Up_id = -1;  //最后1次上报的记
 * @param[out]  NONE
 * @retval      NONE
 * @details
-* @note        状态5时才为接收
+* @note        
 ******************************************************************************
 */
 static void PlatProt_RecvHeart(unsigned char* pData,  unsigned int len)
 {
-    
+    RcvHeartDataDeal((T_SRemoteHeart *)pData);
 }
 
 /**
@@ -700,6 +701,16 @@ static void PlatProt_RecvVinAuthAck(unsigned char* pData, unsigned int len)
     }
 
     gun_id = pVinAuthAck->uiAddr - 1;
+
+    // 不在超时时间内
+    if (1 != Globa->sgp_vin_charge_send_flag)
+    {
+        return;
+    }
+
+    Globa->sgp_vin_charge_send_flag = 0;
+    Globa->sgp_vin_charge_send_num = 0;
+    Globa->Control_DC_Infor_Data[gun_id].VIN_auth_req = 0;
     
     // 鉴权结果
     if (00 == pVinAuthAck->ackResult)
@@ -884,7 +895,7 @@ static void PlatProt_RecvOrderGun(unsigned char* pData, unsigned int len)
 * @note        因为协议响应码定的太简单，所以目前全部填的0
 ******************************************************************************
 */
-static void PlatProt_RecvCancleOrderGun(unsigned char* pData, unsigned int len,)
+static void PlatProt_RecvCancleOrderGun(unsigned char* pData, unsigned int len)
 {
     T_SOrderChargeCancelAck data;
     T_SOrderChargeCancel *pCancleOrderGun = (T_SOrderChargeCancel *)pData;
@@ -1079,92 +1090,31 @@ static void PlatProt_RecvUploadBillAck(unsigned char* pData, unsigned int len)
 * @param[out]  NONE
 * @retval      NONE
 * @details
-* @note        todo:这一块还需要确定
+* @note        
 ******************************************************************************
 */
 static void PlatProt_RecvCardAuthAck(unsigned char* pData, unsigned int len)
 {
+    RcvCardCheckAckHandle((T_SCheckCardDataAck *)pData);
     return;
 }
 
-#if 0 // 暂时用不上，没有开发完成
-static void PlatProt_RecvSetTcuSettings(unsigned char* pData, unsigned int len)
+/**
+******************************************************************************
+* @brief       故障信息上报应答
+* @param[in]   unsigned char* pData     接收到的数据
+* @param[in]   unsigned int len         数据长度
+* @param[out]  NONE
+* @retval      NONE
+* @details
+* @note
+******************************************************************************
+*/
+static void PlatProt_RecvFaultMsgAck(unsigned char* pData, unsigned int len)
 {
-    T_ReomteSetSettings *pReomteSetSettings = (T_ReomteSetSettings *)pData;
-    unsigned char index = 0;
-    float fTemp;
-    int   nTemp;
-
-    for (index = 0; index < pReomteSetSettings->count; index++)
-    {
-        if (REMOTE_CCU_SETTINGS == pReomteSetSettings->settingType)
-        {
-            switch (pReomteSetSettings->key[index][0])
-            {
-            case eCCUPara_AcVoltOver:  // 交流输入过压值
-            {
-                memcpy(&fTemp,pReomteSetSettings->keyValue[index], sizeof(float));
-                fTemp *= 1000;
-                Globa->Charger_param.input_over_limit = (UINT32)fTemp;
-                break;
-            }
-            case eCCUPara_AcVoltLess:  // 交流输入欠压值
-            {
-                memcpy(&fTemp, pReomteSetSettings->keyValue[index], sizeof(float));
-                fTemp *= 1000;
-                Globa->Charger_param.input_lown_limit = (UINT32)fTemp;
-                break;
-            }
-            case eCCUPara_AcVoltDelta:  // 交流输入过欠压回差值
-            {
-                memcpy(&fTemp, pReomteSetSettings->keyValue[index], sizeof(float));
-                fTemp *= 1000;
-                Globa->Charger_param.input_Volt_Delta = (UINT32)fTemp;
-                break;
-            }
-            case eCCUPara_AcVoltPhLost:  // 交流输入缺相值
-            {
-                memcpy(&fTemp, pReomteSetSettings->keyValue[index], sizeof(float));
-                fTemp *= 1000;
-                Globa->Charger_param.input_Volt_phLost = (UINT32)fTemp;
-                break;
-            }
-            case eCCUPara_DcVoltOver:   // 直流输出过压值
-            {
-                memcpy(&fTemp, pReomteSetSettings->keyValue[index], sizeof(float));
-                fTemp *= 1000;
-                Globa->Charger_param.output_over_limit = (UINT32)fTemp;
-                break;
-            }
-            case eCCUPara_DcVoltLess:   // 直流输出欠压值
-            {
-                memcpy(&fTemp, pReomteSetSettings->keyValue[index], sizeof(float));
-                fTemp *= 1000;
-                Globa->Charger_param.output_lown_limit = (UINT32)fTemp;
-                break;
-            }
-            case eCCUPara_DcVoltDelta:   // 直流输出过欠压回差值
-            {
-                memcpy(&fTemp, pReomteSetSettings->keyValue[index], sizeof(float));
-                fTemp *= 1000;
-                Globa->Charger_param.output_Volt_Delta = (UINT32)fTemp;
-                break;
-            }
-            case eCCUPara_GunType:      // 枪类型
-            {
-                memcpy(&nTemp, pReomteSetSettings->keyValue[index], sizeof(int));
-                Globa->Charger_param.output_Volt_Delta = (UINT32)fTemp;
-                break;
-            }
-            }
-
-        }
-
-    }
+    RcvFaultMsgHandle((T_SFaultInfoAck*)pData);
+    return;
 }
-#endif
-
-
 
 
 
@@ -1326,12 +1276,28 @@ void PlatProt_MsgRecvPoll(unsigned char* pRecv_buf, unsigned short buf_size)
             break;
         }
 
+        // 故障信息上报应答
+        case REMOTE2TCU_FAULT_MSG_ACK:
+        {
+            PlatProt_RecvFaultMsgAck(QueueMsg.pData, QueueMsg.DataLen);
+            break;
+        }
+
         default:
             break;
     }
 }
 
-
+/**
+******************************************************************************
+* @brief       消息队列创建
+* @param[in]   NONE
+* @param[out]  NONE
+* @retval      NONE
+* @details
+* @note
+******************************************************************************
+*/
 bool PlatProt_Init(void)
 {
     unsigned short bufLen = 4 * 1024;

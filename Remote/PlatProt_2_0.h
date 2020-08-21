@@ -7,19 +7,11 @@ extern "C" {
 
 
 
+/* 创建消息队列 */
+extern bool PlatProt_Init(void);
 
-
-
-
-
-
-
-
-
-
-
-
-
+/* 消息队列接收 */
+void PlatProt_MsgRecvPoll(unsigned char* pRecv_buf, unsigned short buf_size);
 
 
 
