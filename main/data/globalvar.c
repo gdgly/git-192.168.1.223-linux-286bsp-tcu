@@ -16,22 +16,34 @@
 #include <unistd.h>
 #include <fcntl.h>
 #include <termios.h>
-#include 	<iconv.h>
+#include <iconv.h>
+#include <sys/time.h>
+#include <time.h>
 
 #include "globalvar.h"
-
+#include "qt.h"
+#include "Time_Utity.h"
 /*********设定全局变量使用的互斥锁*************************/
 
 pthread_mutex_t *param_pmutex;
 
 pthread_mutex_t busy_db_pmutex;
 pthread_mutex_t mutex_log;
-pthread_mutex_t sw_fifo;
+pthread_mutex_t modbus_pc_mutex;
 
 UINT32 * process_dog_flag = NULL;
   
-GLOBAVAL *Globa_1, *Globa_2;
+GLOBAVAL *Globa;
 
+const char* g_sys_COM_name[]=
+{
+	"/dev/ttySP4",//COM1
+	"/dev/ttyAM0",//COM2
+	"/dev/ttySP2",//COM3
+	"/dev/ttySP3",//COM4
+	"/dev/ttySP1",//COM5
+	"/dev/ttySP0",//COM6
+};
 
 /************library function API********************************/
 const UINT8 auchCRCHi[] = {
@@ -170,92 +182,92 @@ int Led_Relay_Control(int pin,int value)
 
 
 /**********read IP broadcoast netmask gateway API*********************/
-int sGet_Net_Mask(unsigned char *netMask)
-{
-	int sock;
-  struct sockaddr_in sin,*ip;
-  struct ifreq ifr;
+// int sGet_Net_Mask(unsigned char *netMask)
+// {
+	// int sock;
+  // struct sockaddr_in sin,*ip;
+  // struct ifreq ifr;
   
-	sock = socket(AF_INET, SOCK_DGRAM, 0);
-	if (sock == -1)
-	{
-		perror("socket");
-		return -1;      
-	}
-	strncpy(ifr.ifr_name, MAC_INTERFACE0, IFNAMSIZ);/*这个是网卡的标识符*/
-	ifr.ifr_name[IFNAMSIZ - 1] = 0;
-	if (ioctl(sock, SIOCGIFNETMASK, &ifr)< 0)
-	{
-		perror("ioctl");
-		close(sock); 
-		return -1;
-	}
-	memcpy(&sin, &ifr.ifr_addr, sizeof(sin));  
+	// sock = socket(AF_INET, SOCK_DGRAM, 0);
+	// if (sock == -1)
+	// {
+		// perror("socket");
+		// return -1;      
+	// }
+	// strncpy(ifr.ifr_name, MAC_INTERFACE0, IFNAMSIZ);/*这个是网卡的标识符*/
+	// ifr.ifr_name[IFNAMSIZ - 1] = 0;
+	// if (ioctl(sock, SIOCGIFNETMASK, &ifr)< 0)
+	// {
+		// perror("ioctl");
+		// close(sock); 
+		// return -1;
+	// }
+	// memcpy(&sin, &ifr.ifr_addr, sizeof(sin));  
    
-/* mask[0] = (char)(sin.sin_addr.s_addr >> 0  );
-   mask[1] = (char)(sin.sin_addr.s_addr >> 8  );
-   mask[2] = (char)(sin.sin_addr.s_addr >> 16 );
-   mask[3] = (char)(sin.sin_addr.s_addr >> 24 );*/
-	sprintf(netMask, "%.15s",inet_ntoa(sin.sin_addr));
-	//printf("ZWYM = %s\n",netMask);
-	close(sock); 
-  return 0;
-}
-int sGet_IP_Address(unsigned char *IPAddress)
-{
-  int sock;
-  struct sockaddr_in sin,*ip;
-  struct ifreq ifr;
+// /* mask[0] = (char)(sin.sin_addr.s_addr >> 0  );
+   // mask[1] = (char)(sin.sin_addr.s_addr >> 8  );
+   // mask[2] = (char)(sin.sin_addr.s_addr >> 16 );
+   // mask[3] = (char)(sin.sin_addr.s_addr >> 24 );*/
+	// sprintf(netMask, "%.15s",inet_ntoa(sin.sin_addr));
+	// //printf("ZWYM = %s\n",netMask);
+	// close(sock); 
+  // return 0;
+// }
+// int sGet_IP_Address(unsigned char *IPAddress)
+// {
+  // int sock;
+  // struct sockaddr_in sin,*ip;
+  // struct ifreq ifr;
    
-	sock = socket(AF_INET, SOCK_DGRAM, 0);
-	if (sock == -1)
-	{
-		perror("socket");
-		return -1;      
-	}
+	// sock = socket(AF_INET, SOCK_DGRAM, 0);
+	// if (sock == -1)
+	// {
+		// perror("socket");
+		// return -1;      
+	// }
    
-	strncpy(ifr.ifr_name, MAC_INTERFACE0, IFNAMSIZ);/*这个是网卡的标识符*/
+	// strncpy(ifr.ifr_name, MAC_INTERFACE0, IFNAMSIZ);/*这个是网卡的标识符*/
 
-	ifr.ifr_name[IFNAMSIZ - 1] = 0;
+	// ifr.ifr_name[IFNAMSIZ - 1] = 0;
    
-	if (ioctl(sock, SIOCGIFADDR, &ifr) < 0)
-	{
-		perror("ioctl");
-		close(sock); //cwenfu 20120410
-		return -1;
-	}
-	memcpy(&sin, &ifr.ifr_addr, sizeof(sin)); 
+	// if (ioctl(sock, SIOCGIFADDR, &ifr) < 0)
+	// {
+		// perror("ioctl");
+		// close(sock); //cwenfu 20120410
+		// return -1;
+	// }
+	// memcpy(&sin, &ifr.ifr_addr, sizeof(sin)); 
 
-	sprintf(IPAddress, "%.15s",inet_ntoa(sin.sin_addr));
-	//printf("IP Address = %s\n",IPAddress);    
-	close(sock);
-  return 0;
-}
-int sGet_GateWay(unsigned char *gateway)
-{
-	FILE *fp;
-	char buf[512];
-	char iface[16];
-	unsigned long dest_addr, gate_addr;
+	// sprintf(IPAddress, "%.15s",inet_ntoa(sin.sin_addr));
+	// //printf("IP Address = %s\n",IPAddress);    
+	// close(sock);
+  // return 0;
+// }
+// int sGet_GateWay(unsigned char *gateway)
+// {
+	// FILE *fp;
+	// char buf[512];
+	// char iface[16];
+	// unsigned long dest_addr, gate_addr;
    
-	fp = fopen("/proc/net/route", "r");
-	if (fp == NULL)
-		return -1;
-		/* Skip title line */
-		fgets(buf, sizeof(buf), fp);
-		while(fgets(buf, sizeof(buf), fp)) {
-			if(sscanf(buf, "%s\t%lX\t%lX", iface, &dest_addr, &gate_addr) != 3 || dest_addr != 0){    
-				continue;
-			}
+	// fp = fopen("/proc/net/route", "r");
+	// if (fp == NULL)
+		// return -1;
+		// /* Skip title line */
+		// fgets(buf, sizeof(buf), fp);
+		// while(fgets(buf, sizeof(buf), fp)) {
+			// if(sscanf(buf, "%s\t%lX\t%lX", iface, &dest_addr, &gate_addr) != 3 || dest_addr != 0){    
+				// continue;
+			// }
 
-			sprintf(gateway, "%d.%d.%d.%d",(gate_addr >> 0)&0x000000ff, (gate_addr >> 8)&0x000000ff, (gate_addr >> 16)&0x000000ff, (gate_addr >> 24 )&0x000000ff); 
-			//printf("sxxxxxxxxxxxxxxxxxxxxxxxxxxGet_GateWay = %s\n",gateway);  
-			break;
-		}    
+			// sprintf(gateway, "%d.%d.%d.%d",(gate_addr >> 0)&0x000000ff, (gate_addr >> 8)&0x000000ff, (gate_addr >> 16)&0x000000ff, (gate_addr >> 24 )&0x000000ff); 
+			// //printf("sxxxxxxxxxxxxxxxxxxxxxxxxxxGet_GateWay = %s\n",gateway);  
+			// break;
+		// }    
 
-	fclose(fp);    
-	return 0;
-}
+	// fclose(fp);    
+	// return 0;
+// }
 
 int sGet_DNS(unsigned char *dns1, unsigned char *dns2)
 {
@@ -284,15 +296,16 @@ int sGet_DNS(unsigned char *dns1, unsigned char *dns2)
 	return 0;
 }
 
+//发送告警消息到QT界面程序
 void sent_warning_message(UINT32 type, UINT32 warn_sn, UINT32 row, UINT32 sn)
 {
 	CHARGER_MSG msg;
 
-	msg.type = type;
-	msg.argv[0] = warn_sn;
-	msg.argv[1] = row;
-	msg.argv[2] = sn;
-	msgsnd(Globa_1->arm_to_qt_msg_id, &msg, 3, IPC_NOWAIT);
+	msg.mtype = type;
+	msg.mtext[0] = warn_sn;
+	msg.mtext[1] = row;
+	msg.mtext[2] = sn;
+	msgsnd(Globa->arm_to_qt_msg_id, &msg, 3, IPC_NOWAIT);
 }
 
 
@@ -479,3 +492,93 @@ unsigned char str2_to_BCD(unsigned char *str)
 	return(hex);  
 }
 /**********read nrtmask number*********************/
+
+void my_strncpy(char* dst,const char* src,unsigned int dst_len)
+{
+	strncpy(dst,src,dst_len);//会强制写dst_len个字符到dst,如果src长度小于dst_len，则在dst后续字节处填0，如果长度相等则没有结束符了，必须强制不上
+	dst[dst_len-1] = 0;//确保字符串有结束符	
+}
+
+// unsigned long get_ticks_elapsed(time_t pre_time)
+// {
+	// time_t cur_time;
+	// time(&cur_time);
+	
+	// return abs(cur_time - pre_time);	
+// }
+
+unsigned long GetTickCount(void)//返回系统开机以来的秒数----
+{
+	struct timespec   ts;
+	
+	clock_gettime(CLOCK_MONOTONIC, &ts);
+	
+	return( ts.tv_sec );
+	
+}
+
+
+void GetCurTime(BIN_TIME* cur_time)
+{
+	time_t systime=0;
+    struct tm tm_t;
+	systime = time(NULL);         //获得系统的当前时间
+	localtime_r(&systime, &tm_t);  //结构指针指向当前时间
+	
+	cur_time->year = tm_t.tm_year+1900-YEAR_OFFSET;
+	cur_time->month = tm_t.tm_mon+1;
+	cur_time->day_of_month = tm_t.tm_mday;
+	cur_time->hour = tm_t.tm_hour;
+	cur_time->minute = tm_t.tm_min;
+	cur_time->second = tm_t.tm_sec;	
+}
+
+void Set_RTC_Time(BIN_TIME* new_time)
+{
+	char timestr[32];//2018-04-12 18:18:18
+	char shell_cmd[256];
+	unsigned short year;
+	year = new_time->year+YEAR_OFFSET;
+	
+	sprintf(timestr,"%04d-%02d-%02d %02d:%02d:%02d",year,new_time->month,new_time->day_of_month,new_time->hour,new_time->minute,new_time->second);
+	sprintf(shell_cmd, "date -s \"%s\"", timestr);
+	system(shell_cmd);                
+	system("hwclock --systohc --utc");
+}
+/**
+******************************************************************************
+* @brief       生成本地订单号
+* @param[in]    char *DevSn  			设备地址
+* @param[in]    unsigned char gunID		枪号
+* @param[in]    unsigned char parallelFlag	并机标记（0-单枪，1-并机汇总，2-并机单枪）
+* @param[in]    unsigned short maxLen	本地订单号接收缓存区最大长度（防止溢出）
+* @param[out]   char *localSn			本地订单号
+* @retval       -1 ：参数不合法    0-成功
+* @details     1. 根据设备名查找消息队列头
+* @note        NONE
+******************************************************************************
+*/
+int Make_Local_SN(char *DevSn, unsigned char gunID, unsigned char parallelFlag, char *localSn, unsigned short maxLen)
+{
+    time_t systime;
+    struct tm tm_t;
+
+    if (NULL == DevSn || NULL == localSn || 0 == maxLen)
+    {
+        return -1;
+    } 
+
+    systime = time(NULL);         //获得系统的当前时间 
+    localtime_r(&systime, &tm_t);  //结构指针指向当前时间
+
+    snprintf(localSn, maxLen, "%.16s%02d%02d%02d%02d%02d%02d%02d%02d", DevSn, gunID,
+        parallelFlag, tm_t.tm_year + 1900 - 2000, tm_t.tm_mon + 1, tm_t.tm_mday,
+        tm_t.tm_hour, tm_t.tm_min, tm_t.tm_sec);
+
+    return 0;
+}
+
+
+
+
+

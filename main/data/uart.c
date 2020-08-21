@@ -240,25 +240,30 @@ int read_datas_tty(int fd, unsigned char *rcv_buf, int Len, int usec1, int usec2
 		if(retval == -1){
 			perror("select()");
 			break;
-		}else if(retval){
-			if(FD_ISSET(fd, &rfds)){//先判断一下这外被监视的句柄是否真的变成可读的了			
-        ret= read(fd, pbuf, count);
-        if(ret > 0){
-        	count = count - ret;
-        	pbuf = pbuf + ret;
-          if(count == 0){
-            break;
-          }
+		}else if(retval)
+		{
+			if(FD_ISSET(fd, &rfds))
+			{//先判断一下这外被监视的句柄是否真的变成可读的了			
+				ret= read(fd, pbuf, count);
+				if(ret > 0)
+				{
+					count = count - ret;
+					pbuf = pbuf + ret;
+					if(count == 0)					
+						break;
 
 					tv.tv_sec = 0;
 					tv.tv_usec = usec2;//当收到数据后重新复位计时字符间超时时间
-        }else{
-          break;
-        }
-			}else{
+				}else
+				{
+						break;
+				}
+			}else
+			{
 				break;
 			}
-		}else{
+		}else
+		{
 			break;
 		}
 	}

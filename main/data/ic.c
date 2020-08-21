@@ -24,10 +24,20 @@
 #include <sys/msg.h>
 #include <sys/socket.h>
 #include <netinet/in.h>
-#include "common.h"
+#include <sys/prctl.h>
+
 #include "globalvar.h"
 #define MT625_DEBUG 1        //调试使能
-extern int valid_card_check(unsigned char *sn);
+
+#define MAX_IC_READER_TIMEOUTCNT  10
+int ic_reader_no_resp_cnt = 0;
+
+
+int Find_DZ_Step = 0xFF;
+int card_pwr_on_st = 0xFF;
+int card_pwr_Off_st = 0xFF;
+char  card_state[4];
+SEND_CARD_INFO Command_Card_Info; //操作卡片命令（上电和解锁）
 /**------------------------------------------------------------------------------
 M1卡指令         
 **------------------------------------------------------------------------------*/
@@ -87,7 +97,21 @@ unsigned char IC_SPG_Supp_Cmd[ ]    = {0x02,0x00,0x02,0x51,0x35,0x03,0x67};
 //弹卡
 unsigned char IC_SPG_Push_Cmd[ ]    = {0x02,0x00,0x02,0x32,0x40,0x03,0x71};
 
-unsigned char IC_com_Find_flag = 0;
+//unsigned char IC_com_Find_flag = 0;
+
+int DES_to_min(unsigned char *sourceData, unsigned int sourceSize, unsigned char *keyStr, unsigned char *DesData)
+{
+	unsigned char* resultData;
+	unsigned int resultSize;
+
+	//解密
+	resultData = (unsigned char* )DES_Decrypt(sourceData, sourceSize, keyStr, &resultSize);
+	memcpy(DesData, resultData, sourceSize);
+	free(resultData);//上面DES解密返回数据是申请的动态内存，此处必须释放
+
+	return (resultSize);
+}
+
 /******************************************************************************
 ** Function name:       MT625_BCC 异或校验
 ** Descriptions:	    计算一组数据的异或值
@@ -119,7 +143,7 @@ static UINT8 MT625_BCC(UINT8 *buf, INT32 len)
 ** Function name:       MT625_Card_Search
 ** Descriptions:	     M1卡、CPU卡  搜索卡
 ** Input parameters:						
-** Output parameters:	 
+** Output parameters:	
 ** Returned value:		        
 ** Created by:		
 ** Created Date:		
@@ -139,17 +163,44 @@ int MT625_Card_Search(int fd)
     //printf("搜索卡:Count = %d Buf[5]= %d\n",Count,Buf[5]);
 		if(Count == 8){
 			if(MT625_BCC(Buf, Count-1) == Buf[Count-1]){
-				IC_com_Find_flag = 0;
+				//IC_com_Find_flag = 0;
 				if(Buf[5] == 0x59){
-					return (1);//寻找到M1或者CPU卡
+					//return (1);//寻找到M1或者CPU卡
+					Ret = 1;
 				}else if(Buf[5] == 0x4E){
-					return (2);//寻卡不成功
+					//return (2);//寻卡不成功
+					Ret = 2;
 				}
 			}
 		}
 	}
-	IC_com_Find_flag = 1;
-	return (0);
+	//IC_com_Find_flag = 1;
+	if(0 == Ret)
+	{
+		ic_reader_no_resp_cnt++;
+		if(ic_reader_no_resp_cnt > MAX_IC_READER_TIMEOUTCNT)
+		{
+			ic_reader_no_resp_cnt = 0;
+			if(Globa->Control_DC_Infor_Data[0].Error.IC_connect_lost == 0)
+			{
+				Globa->Control_DC_Infor_Data[0].Error.IC_connect_lost = 1;							
+				sent_warning_message(0x99, 55, 1, 0);//1为枪号						
+				Globa->Control_DC_Infor_Data[0].Warn_system++;
+			}
+		}
+	}
+	else//ok
+	{
+		ic_reader_no_resp_cnt = 0;
+		
+		if(Globa->Control_DC_Infor_Data[0].Error.IC_connect_lost == 1)
+		{
+			Globa->Control_DC_Infor_Data[0].Error.IC_connect_lost = 0;							
+			sent_warning_message(0x98, 55, 1, 0);//1为枪号						
+			Globa->Control_DC_Infor_Data[0].Warn_system++;
+		}
+	}
+	return (Ret);
 
 }
 
@@ -239,7 +290,7 @@ int MT625_Card_Password(int fd,unsigned char *pw)
 {  
   int Ret = 0, Count = 0, Count1 = 0;
 	unsigned char Buf[MAX_MODBUS_FRAMESIZE] = {0};
-	memcpy(&IC_1KeyA_Cmd[6], &Globa_1->Charger_param.Key[0], 6);
+	memcpy(&IC_1KeyA_Cmd[6], &Globa->Charger_param.Key[0], 6);
 	IC_1KeyA_Cmd[13] = MT625_BCC(IC_1KeyA_Cmd, 13);
 	Count = write(fd, IC_1KeyA_Cmd, sizeof(IC_1KeyA_Cmd));
 	if(Count == sizeof(IC_1KeyA_Cmd)){
@@ -293,7 +344,7 @@ int MT625_Card_keysign(int fd)
 {   
   int Ret = 0, Count = 0, Count1 = 0;
 	unsigned char Buf[MAX_MODBUS_FRAMESIZE] = {0};
-	memcpy(&IC_1KeyA_Cmd[6], &Globa_1->Charger_param.Key[0], 6);
+	memcpy(&IC_1KeyA_Cmd[6], &Globa->Charger_param.Key[0], 6);
 	IC_1KeyA_Cmd[13] = MT625_BCC(IC_1KeyA_Cmd, 13);
 	
 	Count = write(fd, IC_1KeyA_Cmd, sizeof(IC_1KeyA_Cmd));
@@ -311,13 +362,13 @@ int MT625_Card_keysign(int fd)
 							  if(Buf[7] == 0x59){
 								  if(Buf[8] == 0xAA){//表明此卡已被锁，未结算
 										if(MT625_DEBUG) printf("MT625_Card lock\r\n");
-										Globa_1->User_Card_Lock_Info.card_lock_time.year_H = bcd_to_int_1byte(Buf[9]);//2016年的0x20
-										Globa_1->User_Card_Lock_Info.card_lock_time.year_L = bcd_to_int_1byte(Buf[10]);//2016年的0x16
-										Globa_1->User_Card_Lock_Info.card_lock_time.month = bcd_to_int_1byte(Buf[11]);
-										Globa_1->User_Card_Lock_Info.card_lock_time.day_of_month = bcd_to_int_1byte(Buf[12]);
-										Globa_1->User_Card_Lock_Info.card_lock_time.hour = bcd_to_int_1byte(Buf[13]);
-										Globa_1->User_Card_Lock_Info.card_lock_time.minute = bcd_to_int_1byte(Buf[14]);
-										Globa_1->User_Card_Lock_Info.card_lock_time.second = bcd_to_int_1byte(Buf[15]);
+										Globa->User_Card_Lock_Info.card_lock_time.year_H = bcd_to_int_1byte(Buf[9]);//2016年的0x20
+										Globa->User_Card_Lock_Info.card_lock_time.year_L = bcd_to_int_1byte(Buf[10]);//2016年的0x16
+										Globa->User_Card_Lock_Info.card_lock_time.month = bcd_to_int_1byte(Buf[11]);
+										Globa->User_Card_Lock_Info.card_lock_time.day_of_month = bcd_to_int_1byte(Buf[12]);
+										Globa->User_Card_Lock_Info.card_lock_time.hour = bcd_to_int_1byte(Buf[13]);
+										Globa->User_Card_Lock_Info.card_lock_time.minute = bcd_to_int_1byte(Buf[14]);
+										Globa->User_Card_Lock_Info.card_lock_time.second = bcd_to_int_1byte(Buf[15]);
 								    return(11);
 									}else if(Buf[8] == 0x55){
 								  	if(MT625_DEBUG)printf("----MT625_Card unlock------\r\n");
@@ -358,7 +409,7 @@ int MT625_Card_ZXLH(int fd,unsigned char *XLH)
 {   
   int Ret = 0, Count = 0, Count1 = 0;
 	unsigned char Buf[MAX_MODBUS_FRAMESIZE] = {0};
-	memcpy(&IC_1KeyA_Cmd[6], &Globa_1->Charger_param.Key[0], 6);
+	memcpy(&IC_1KeyA_Cmd[6], &Globa->Charger_param.Key[0], 6);
 	IC_1KeyA_Cmd[13] = MT625_BCC(IC_1KeyA_Cmd, 13);
 	Count = write(fd, IC_1KeyA_Cmd, sizeof(IC_1KeyA_Cmd));
 	if(Count == sizeof(IC_1KeyA_Cmd)){
@@ -411,7 +462,7 @@ int MT625_Card_Money(int fd,unsigned int *rmb)
 {   
   int Ret = 0, Count = 0, Count1 = 0;
 	unsigned char Buf[MAX_MODBUS_FRAMESIZE] = {0};
-	memcpy(&IC_2KeyA_Cmd[6], &Globa_1->Charger_param.Key[0],6);
+	memcpy(&IC_2KeyA_Cmd[6], &Globa->Charger_param.Key[0],6);
 	IC_2KeyA_Cmd[13] = MT625_BCC(IC_2KeyA_Cmd, 13);
 	Count = write(fd, IC_2KeyA_Cmd, sizeof(IC_2KeyA_Cmd));
 	if(Count == sizeof(IC_2KeyA_Cmd)){
@@ -469,56 +520,66 @@ int MT625_Card_Key(int fd)
 	UINT8  DData[6];
 	unsigned char Buf[MAX_MODBUS_FRAMESIZE] = {0};
 	Count = write(fd, IC_3KeyA_Cmd, sizeof(IC_3KeyA_Cmd));
-	if(Count == sizeof(IC_3KeyA_Cmd)){
-		Count = read_datas_tty(fd, Buf, MAX_MODBUS_FRAMESIZE, 1000000, 50000);
-    if(Count == 9){
-			if(MT625_BCC(Buf, Count-1) == Buf[Count-1]){
-				if(Buf[6] == 0x59){
+	if(Count == sizeof(IC_3KeyA_Cmd))
+	{
+		Count = read_datas_tty(fd, Buf, MAX_MODBUS_FRAMESIZE, 1000000, 15000);
+		if(Count == 9)
+		{
+			if(MT625_BCC(Buf, Count-1) == Buf[Count-1])
+			{
+				if(Buf[6] == 0x59)
+				{
 					usleep(30000);
-				  Count1= write(fd, IC_30_read_Cmd, sizeof(IC_30_read_Cmd));
-				  if(Count1 == sizeof(IC_30_read_Cmd)){
-		        Count = read_datas_tty(fd, Buf, MAX_MODBUS_FRAMESIZE, 1000000, 50000);
-				    if(Count == 26){
-			        if(MT625_BCC(Buf, Count-1) == Buf[Count-1]){
-							  if(Buf[7] == 0x59){
-								  Ret1 = DES_to_min(&Buf[8], 8,  KEY, DData);
-								  if(0 != memcmp(&Globa_1->Charger_param.Key[0], &DData[0], sizeof(DData))){
-											old_Key[0] = 0xFF;
-											old_Key[1] = 0xFF;
-											old_Key[2] = 0xFF;
-											old_Key[3] = 0xFF;
-											old_Key[4] = 0xFF;
-											old_Key[5] = 0xFF;
-										if(0 == memcmp(&Globa_1->Charger_param.Key[0], &old_Key[0], sizeof(Globa_1->Charger_param.Key))){
-											memcpy(&Globa_1->Charger_param.Key[0], &DData[0], sizeof(DData));
+					Count1= write(fd, IC_30_read_Cmd, sizeof(IC_30_read_Cmd));
+					if(Count1 == sizeof(IC_30_read_Cmd))
+					{
+						Count = read_datas_tty(fd, Buf, MAX_MODBUS_FRAMESIZE, 1000000, 15000);
+						if(Count == 26)
+						{
+							if(MT625_BCC(Buf, Count-1) == Buf[Count-1])
+							{
+								if(Buf[7] == 0x59)
+								{
+									Ret1 = DES_to_min(&Buf[8], 8,  KEY, DData);
+									if(0 != memcmp(&Globa->Charger_param.Key[0], &DData[0], sizeof(DData)))//卡片密钥与本机不匹配
+									{
+										old_Key[0] = 0xFF;
+										old_Key[1] = 0xFF;
+										old_Key[2] = 0xFF;
+										old_Key[3] = 0xFF;
+										old_Key[4] = 0xFF;
+										old_Key[5] = 0xFF;
+										if(0 == memcmp(&Globa->Charger_param.Key[0], &old_Key[0], sizeof(Globa->Charger_param.Key)))
+										{//本机密钥当前未初始化
+											memcpy(&Globa->Charger_param.Key[0], &DData[0], sizeof(DData));
 											System_param_save();
 											if(MT625_DEBUG) printf("MT625_Card_key System_param_save ok \r\n");
-										}else{
-											for(i=0;i<sizeof(Globa_1->Charger_param.Key);i++){
-											  if(MT625_DEBUG) printf("Globa_1->Charger_param.Key[%d]= %x \n",i,Globa_1->Charger_param.Key[i]);
-												if(MT625_DEBUG) printf("old_Key[%d]= %x \n",i,old_Key[i]);
-												if(MT625_DEBUG) printf("DData[%d]= %x \n",i,DData[i]);
-
-											}
+											return (21);
+										}else
+										{//读取代理商密钥与本机密钥不匹配
 											return(22);
 										}
-								  }
-								  if(MT625_DEBUG) printf("MT625_Card_key ok \r\n");
-								  return(21);//成功读取扇区3块0卡代理商密钥
-		            }else{
+									}else//match
+									{
+										if(MT625_DEBUG) printf("MT625_Card_key ok \r\n");
+										return(21);//成功读取扇区3块0卡代理商密钥
+									}
+								}else
+								{
 									if(MT625_DEBUG)printf("MT625_Card_key fail \r\n");
-				          return(22);
-				        }//读取代理商密钥失败
-				      }
-	          }
-	        }
-			  }else{
+									return(22);
+								}//读取代理商密钥失败
+							}
+						}
+					}
+				}else
+				{
 					if(MT625_DEBUG)printf("MT625_Card_key fail 111111\r\n");
-		      return (23);
+					return (23);
 				}//验证扇区3 KeyA失败
-      }
-    }
-  }
+			}
+		}
+	}
 	return (0);
 }	
 	
@@ -554,15 +615,15 @@ int MT625_Card_Write0xAA(int fd)
 	IC_0xAA_write_Cmd[13] = int_to_bcd_1byte(tm_t.tm_min);	
 	IC_0xAA_write_Cmd[14] = int_to_bcd_1byte(tm_t.tm_sec);
 	
-	Globa_1->User_Card_Lock_Info.card_lock_time.year_H = ((tm_t.tm_year+1900)/100);//2016年的0x20
-	Globa_1->User_Card_Lock_Info.card_lock_time.year_L = ((tm_t.tm_year+1900)%100);//2016年的0x16
-	Globa_1->User_Card_Lock_Info.card_lock_time.month = tm_t.tm_mon + 1;
-	Globa_1->User_Card_Lock_Info.card_lock_time.day_of_month = tm_t.tm_mday;
-	Globa_1->User_Card_Lock_Info.card_lock_time.hour = tm_t.tm_hour;
-	Globa_1->User_Card_Lock_Info.card_lock_time.minute = tm_t.tm_min;
-	Globa_1->User_Card_Lock_Info.card_lock_time.second = tm_t.tm_sec; //为了保持锁卡时间和开始时间一致
+	Globa->User_Card_Lock_Info.card_lock_time.year_H = ((tm_t.tm_year+1900)/100);//2016年的0x20
+	Globa->User_Card_Lock_Info.card_lock_time.year_L = ((tm_t.tm_year+1900)%100);//2016年的0x16
+	Globa->User_Card_Lock_Info.card_lock_time.month = tm_t.tm_mon + 1;
+	Globa->User_Card_Lock_Info.card_lock_time.day_of_month = tm_t.tm_mday;
+	Globa->User_Card_Lock_Info.card_lock_time.hour = tm_t.tm_hour;
+	Globa->User_Card_Lock_Info.card_lock_time.minute = tm_t.tm_min;
+	Globa->User_Card_Lock_Info.card_lock_time.second = tm_t.tm_sec; //为了保持锁卡时间和开始时间一致
 	
-  memcpy(&IC_1KeyA_Cmd[6], &Globa_1->Charger_param.Key[0], 6);
+  memcpy(&IC_1KeyA_Cmd[6], &Globa->Charger_param.Key[0], 6);
 	IC_1KeyA_Cmd[13] = MT625_BCC(IC_1KeyA_Cmd, 13);
 	IC_0xAA_write_Cmd[24] = MT625_BCC(IC_0xAA_write_Cmd, 24);
 	Count = write(fd, IC_1KeyA_Cmd, sizeof(IC_1KeyA_Cmd));
@@ -631,7 +692,7 @@ int MT625_Card_Write0x55(int fd)
 	IC_0x55_write_Cmd[13] = int_to_bcd_1byte(tm_t.tm_min);	
 	IC_0x55_write_Cmd[14] = int_to_bcd_1byte(tm_t.tm_sec);
 	
-  memcpy(&IC_1KeyA_Cmd[6], &Globa_1->Charger_param.Key[0], 6);
+  memcpy(&IC_1KeyA_Cmd[6], &Globa->Charger_param.Key[0], 6);
 	IC_1KeyA_Cmd[13] = MT625_BCC(IC_1KeyA_Cmd, 13);
 	IC_0x55_write_Cmd[24] = MT625_BCC(IC_0x55_write_Cmd, 24);
 	Count = write(fd, IC_1KeyA_Cmd, sizeof(IC_1KeyA_Cmd));
@@ -685,7 +746,7 @@ int MT625_Pay_Delete(int fd,unsigned int rmb,unsigned int rmb1)
   int Ret = 0, Count = 0, Count1 = 0;
   int rmb2 = 0;
 	unsigned char Buf[MAX_MODBUS_FRAMESIZE] = {0};
-	memcpy(&IC_2KeyA_Cmd[6], &Globa_1->Charger_param.Key[0], 6);
+	memcpy(&IC_2KeyA_Cmd[6], &Globa->Charger_param.Key[0], 6);
 	IC_2KeyA_Cmd[13] = MT625_BCC(IC_2KeyA_Cmd, 13);
 	Count = write(fd, IC_2KeyA_Cmd, sizeof(IC_2KeyA_Cmd));
 	if(Count == sizeof(IC_2KeyA_Cmd)){
@@ -838,7 +899,7 @@ int IC_SPG_Check(int fd)
 */
 
 //CPU卡 预处理
-int IC_SPG_ProDeal(int fd, unsigned char *sn, unsigned int *rmb)
+int IC_SPG_ProDeal(int fd, unsigned char *sn, unsigned int *rmb,unsigned int *Card_State)
 {
 	int Ret, Count,i;
 	unsigned char Buf[MAX_MODBUS_FRAMESIZE];
@@ -866,6 +927,7 @@ int IC_SPG_ProDeal(int fd, unsigned char *sn, unsigned int *rmb)
 			if(MT625_BCC(Buf, Count-1) == Buf[Count-1]){
 				if(Buf[5] == 0x59){
 					if(Buf[6] == 0x01){//用户卡
+						*Card_State = Buf[7];
 						if(Buf[7] == 0x30){
 							if(MT625_DEBUG)printf("IC_SPG_ProDeal 55555 card ok\r\n");
 							
@@ -926,13 +988,13 @@ int IC_SPG_Start(int fd, unsigned int *rmb, struct tm *tm_t)
 	IC_SPG_Start_Cmd[10] = int_to_bcd_1byte(tm_t->tm_min);	
 	IC_SPG_Start_Cmd[11] = int_to_bcd_1byte(tm_t->tm_sec);
 	
-	Globa_1->User_Card_Lock_Info.card_lock_time.year_H = ((tm_t->tm_year+1900)/100);//2016年的0x20
-	Globa_1->User_Card_Lock_Info.card_lock_time.year_L = ((tm_t->tm_year+1900)%100);//2016年的0x16
-	Globa_1->User_Card_Lock_Info.card_lock_time.month = tm_t->tm_mon + 1;
-	Globa_1->User_Card_Lock_Info.card_lock_time.day_of_month = tm_t->tm_mday;
-	Globa_1->User_Card_Lock_Info.card_lock_time.hour = tm_t->tm_hour;
-	Globa_1->User_Card_Lock_Info.card_lock_time.minute = tm_t->tm_min;
-	Globa_1->User_Card_Lock_Info.card_lock_time.second = tm_t->tm_sec; //为了保持锁卡时间和开始时间一致
+	Globa->User_Card_Lock_Info.card_lock_time.year_H = ((tm_t->tm_year+1900)/100);//2016年的0x20
+	Globa->User_Card_Lock_Info.card_lock_time.year_L = ((tm_t->tm_year+1900)%100);//2016年的0x16
+	Globa->User_Card_Lock_Info.card_lock_time.month = tm_t->tm_mon + 1;
+	Globa->User_Card_Lock_Info.card_lock_time.day_of_month = tm_t->tm_mday;
+	Globa->User_Card_Lock_Info.card_lock_time.hour = tm_t->tm_hour;
+	Globa->User_Card_Lock_Info.card_lock_time.minute = tm_t->tm_min;
+	Globa->User_Card_Lock_Info.card_lock_time.second = tm_t->tm_sec; //为了保持锁卡时间和开始时间一致
 	
 	IC_SPG_Start_Cmd[13] = MT625_BCC(IC_SPG_Start_Cmd, sizeof(IC_SPG_Start_Cmd)-1);
 
@@ -1091,13 +1153,13 @@ int IC_SPG_MT318_Read_unlock_time(int fd)
     if(Count == 42){//响应帧长度OK						
 			if(rx_buf[5] == 0x59){								
 		  	if(0x01 == rx_buf[8]){//卡灰锁
-				  Globa_1->User_Card_Lock_Info.card_lock_time.year_H = bcd_to_int_1byte(rx_buf[23]);//2016年的0x20
-					Globa_1->User_Card_Lock_Info.card_lock_time.year_L = bcd_to_int_1byte(rx_buf[24]);//2016年的0x16
-					Globa_1->User_Card_Lock_Info.card_lock_time.month = bcd_to_int_1byte(rx_buf[25]);
-					Globa_1->User_Card_Lock_Info.card_lock_time.day_of_month = bcd_to_int_1byte(rx_buf[26]);
-					Globa_1->User_Card_Lock_Info.card_lock_time.hour = bcd_to_int_1byte(rx_buf[27]);
-					Globa_1->User_Card_Lock_Info.card_lock_time.minute = bcd_to_int_1byte(rx_buf[28]);
-					Globa_1->User_Card_Lock_Info.card_lock_time.second = bcd_to_int_1byte(rx_buf[29]);
+				  Globa->User_Card_Lock_Info.card_lock_time.year_H = bcd_to_int_1byte(rx_buf[23]);//2016年的0x20
+					Globa->User_Card_Lock_Info.card_lock_time.year_L = bcd_to_int_1byte(rx_buf[24]);//2016年的0x16
+					Globa->User_Card_Lock_Info.card_lock_time.month = bcd_to_int_1byte(rx_buf[25]);
+					Globa->User_Card_Lock_Info.card_lock_time.day_of_month = bcd_to_int_1byte(rx_buf[26]);
+					Globa->User_Card_Lock_Info.card_lock_time.hour = bcd_to_int_1byte(rx_buf[27]);
+					Globa->User_Card_Lock_Info.card_lock_time.minute = bcd_to_int_1byte(rx_buf[28]);
+					Globa->User_Card_Lock_Info.card_lock_time.second = bcd_to_int_1byte(rx_buf[29]);
 					return 0;
 		    }
 		  }
@@ -1106,11 +1168,412 @@ int IC_SPG_MT318_Read_unlock_time(int fd)
 	return ( -1);
 }
 
+//查询卡初始化-----
+void Init_Find_St()
+{
+	Find_DZ_Step = 0x01;
+	memset(&Globa->MUT100_Dz_Card_Info.IC_type,0,sizeof(Globa->MUT100_Dz_Card_Info));//test
+}
+
+UINT32 IsFind_Idle_OK(void)
+{
+	if(0xFF == Find_DZ_Step)
+		return 1;
+	else
+		return 0;	
+}
+void Init_Find_St_End()
+{
+	Find_DZ_Step = 0xFF;	
+	//memset(&Globa->MUT100_Dz_Card_Info.IC_type,0,sizeof(Globa->MUT100_Dz_Card_Info));
+}
+
+//查询卡片
+void Find_DZ_Card(int fd)
+{
+	int Ret = 0;
+	char card_sn[16] = {"\0"};
+	switch(Find_DZ_Step)
+	{
+		case 0xFF:{//IDLE---空闲状态
+		 	usleep(20000);
+			break;
+		}
+		case 0x01:{//进行寻卡
+			Ret = MT625_Card_Search(fd);
+			if(Ret == 1){//表示查询到卡片
+				Find_DZ_Step  = 0x02;
+				memset(&card_sn[0], '0', sizeof(card_sn));
+			}
+			break;
+		}
+		case 0x02:{//进行卡片区分，区分其为CPU还是M1卡
+		  Ret = MT625_Card_number(fd, &card_sn[0]);//读取卡号(fd);
+			if((Ret == 5)||(Ret == 3)||(Ret == 4)){ //M1卡
+			  if((card_sn[0] == '6')&&(card_sn[1] == '8')){//员工卡
+					Globa->MUT100_Dz_Card_Info.IC_type = 2;
+					Globa->MUT100_Dz_Card_Info.IC_state = 0x30;	 //卡片状态----灰锁--31 或正常--30
+					memcpy(&Globa->MUT100_Dz_Card_Info.IC_ID[0], &card_sn[0], sizeof(Globa->MUT100_Dz_Card_Info.IC_ID));//先保存一下临时卡号
+					Globa->MUT100_Dz_Card_Info.IC_money= 0;
+					Find_DZ_Step = 0x04;
+					break;
+				}else if(!((card_sn[0] == '6')&&((card_sn[1] == '8')||(card_sn[1] == '9')))){//用户卡//(((card_sn[0] == '6')&&(card_sn[1] != '8')&&(card_sn[1] != '9'))||((card_sn[0] == '0')&&(card_sn[1] == '0'))){//用户卡
+					Globa->MUT100_Dz_Card_Info.IC_type = 1;
+					Globa->MUT100_Dz_Card_Info.IC_money = 0;
+					Find_DZ_Step = 0x03;
+					memcpy(&Globa->MUT100_Dz_Card_Info.IC_ID[0], &card_sn[0], sizeof(Globa->MUT100_Dz_Card_Info.IC_ID));//先保存一下临时卡号
+					break;
+				}else if((card_sn[0] == '6')&&(card_sn[1] == '9')){//管理员卡
+					Globa->MUT100_Dz_Card_Info.IC_type = 3;
+					if(21 == MT625_Card_Key(fd))//管理卡密钥匹配
+						Globa->MUT100_Dz_Card_Info.IC_type = 3;
+					else
+						Globa->MUT100_Dz_Card_Info.IC_type = 33;//test
+					Globa->MUT100_Dz_Card_Info.IC_Read_OK = 1;
+					memcpy(&Globa->MUT100_Dz_Card_Info.IC_ID[0], &card_sn[0], sizeof(Globa->MUT100_Dz_Card_Info.IC_ID));//先保存一下临时卡号
+					Globa->MUT100_Dz_Card_Info.IC_state = 0x30;	 
+					Find_DZ_Step = 0xCC;
+					break;
+				}else{ //非充电卡，
+					Globa->MUT100_Dz_Card_Info.IC_type = 4;	 //非充电卡
+					Globa->MUT100_Dz_Card_Info.IC_Read_OK = 1;
+					Globa->MUT100_Dz_Card_Info.IC_money= 0;
+					Globa->MUT100_Dz_Card_Info.IC_state = 0x30;	 
+					Find_DZ_Step = 0xCC;
+					break;
+				}
+			}else if((Ret == 6)||(Ret == 7)){//CPU卡
+				Find_DZ_Step = 0x06;
+			}
+			break;
+		}
+		case 0x03:{//读卡状态
+		  Ret = MT625_Card_number(fd, &card_sn[0]);//读取卡号(fd);
+			if((Ret == 5)||(Ret == 3)||(Ret == 4)){ //M1卡
+				if(0 == memcmp(&card_sn[0], &Globa->MUT100_Dz_Card_Info.IC_ID[0], sizeof(Globa->MUT100_Dz_Card_Info.IC_ID))){
+					Ret = MT625_Card_keysign(fd);//读卡锁卡标志，判断卡处于上锁还是解锁
+					if(Ret == 12){//正常状态
+						Globa->MUT100_Dz_Card_Info.IC_state = 0x30;	 //卡片状态----灰锁--31 或正常--30
+						Find_DZ_Step = 0x04;
+						printf("----寻卡成功----卡片状态----正常----Find_DZ_Step ret=%d \n", Find_DZ_Step);
+					}else if(Ret == 11){//锁卡状态
+						Globa->MUT100_Dz_Card_Info.IC_state = 0x31;	 //卡片状态----灰锁--31 或正常--30
+						Find_DZ_Step = 0x04;
+						printf("----寻卡成功----卡片状态----灰锁----Find_DZ_Step ret=%d \n", Find_DZ_Step);
+					}
+				}else{
+					Find_DZ_Step = 0x02; 
+				}
+			}
+			break;
+		}
+		case 0x04:{//读金额
+			Ret = MT625_Card_number(fd, &card_sn[0]);//读取卡号(fd);
+			if((Ret == 5)||(Ret == 3)||(Ret == 4)){ //M1卡
+				if(0 == memcmp(&card_sn[0], &Globa->MUT100_Dz_Card_Info.IC_ID[0], sizeof(Globa->MUT100_Dz_Card_Info.IC_ID))){
+					Ret = 0;
+					int  Ret_rmb_1 = 0;
+					int  Ret_rmb_2 = 0;
+					int  temp_rmb = 0;
+					int  ls_temp_rmb_1 = 0;
+					int  ls_temp_rmb_2 = 0;
+					usleep(20000);
+					Ret = MT625_Card_Money(fd, &temp_rmb);
+					usleep(20000);
+					Ret_rmb_1 = MT625_Card_Money(fd, &ls_temp_rmb_1);
+					usleep(20000);
+					Ret_rmb_2 = MT625_Card_Money(fd, &ls_temp_rmb_2);//读卡锁卡标志，判断卡处于上锁还是解锁
+					if((Ret == 18)&&(Ret_rmb_1 == 18)&&(Ret_rmb_2 == 18)&&(ls_temp_rmb_1 == temp_rmb)&&(ls_temp_rmb_1 == ls_temp_rmb_2))
+					{
+						Globa->MUT100_Dz_Card_Info.IC_money = temp_rmb;
+						//Globa->MUT100_Dz_Card_Info.IC_money = 100000;//test
+						//读卡特殊标记
+						usleep(20000);
+						if(8 == MT625_Card_State(fd, card_state))
+						{
+							//Globa->MUT100_Dz_Card_Info.qiyehao_flag = 0x55;//test
+							Globa->MUT100_Dz_Card_Info.qiyehao_flag       = card_state[0];//0xAA或0x55
+							Globa->MUT100_Dz_Card_Info.private_price_flag = card_state[1];
+							Globa->MUT100_Dz_Card_Info.order_chg_flag     = card_state[2];
+							Globa->MUT100_Dz_Card_Info.offline_chg_flag   = card_state[3];
+							
+							printf("------qiyehao_flag      = 0x%X----\n", card_state[0]);
+							printf("------private_price_flag= 0x%X----\n", card_state[1]);
+							printf("------order_chg_flag    = 0x%X----\n", card_state[2]);
+							printf("------offline_chg_flag  = 0x%X----\n", card_state[3]);
+							Globa->MUT100_Dz_Card_Info.IC_Read_OK = 1;
+							Find_DZ_Step = 0xcc; 							
+						}else
+						{
+							
+							
+						}					
+						
+					}else{
+						//if(DEBUGLOG) LogWrite(ERROR,"1号枪三次读出的余额为%d :%d :%d 结果反馈%d :%d :%d",temp_rmb,ls_temp_rmb_1,ls_temp_rmb_2,Ret,Ret_rmb_1,Ret_rmb_2);  
+					}
+				}else{
+					Find_DZ_Step = 0x02; 
+				}
+			}				
+			break;
+		}
+		case 0x06:{//cpu
+		  int  temp_rmb = 0,Card_State = 0;
+			Ret = IC_SPG_ProDeal(fd, &card_sn[0], &temp_rmb, &Card_State); //CPU卡预处理
+			if((Ret == 5)||(Ret == 6)||(Ret == 7)){
+				if((card_sn[0] == '6')&&(card_sn[1] == '8')){//员工卡
+					Globa->MUT100_Dz_Card_Info.IC_type = 2;
+				}else if(!((card_sn[0] == '6')&&((card_sn[1] == '8')||(card_sn[1] == '9')))){//用户卡//if(((card_sn[0] == '6')&&(card_sn[1] != '8')&&(card_sn[1] != '9'))||((card_sn[0] == '0')&&(card_sn[1] == '0'))){//用户卡
+					Globa->MUT100_Dz_Card_Info.IC_type = 1;
+				}else if((card_sn[0] == '6')&&(card_sn[1] == '9')){//管理员卡
+					Globa->MUT100_Dz_Card_Info.IC_type = 3;
+				}else{ //非充电卡，
+					Globa->MUT100_Dz_Card_Info.IC_type = 4;	 //非充电卡
+				}
+				Globa->MUT100_Dz_Card_Info.IC_state = Card_State;	 //卡片状态----灰锁--31 或正常--30
+				memcpy(&Globa->MUT100_Dz_Card_Info.IC_ID[0], &card_sn[0], sizeof(Globa->MUT100_Dz_Card_Info.IC_ID));//先保存一下临时卡号
+				Globa->MUT100_Dz_Card_Info.IC_money = temp_rmb;
+				Globa->MUT100_Dz_Card_Info.IC_Read_OK = 1;
+				Find_DZ_Step = 0xFF;//IDLE
+			}else{
+				Globa->MUT100_Dz_Card_Info.IC_type = 4;	 //非充电卡
+				Globa->MUT100_Dz_Card_Info.IC_Read_OK = 1;
+				Find_DZ_Step = 0xFF;//IDLE
+			}
+			break ;
+		}
+		case 0xcc:{//释放互斥
+			Find_DZ_Step = 0xFF;//IDLE
+		}
+		default:
+			break;
+	}
+}
+
+//初始卡上电步骤
+void Init_Card_PowerOn_St(SEND_CARD_INFO *send_card_comd_info)
+{
+  //card_pwr_on_st = 0x01;	//直接从验证卡片密码开始	
+  printf("-------初始卡上电步骤------\n");
+ 	memcpy(&Command_Card_Info.Card_Command, &send_card_comd_info->Card_Command, sizeof(SEND_CARD_INFO));//先保存一下临时卡号
+  card_pwr_on_st = 0x01;	//直接从验证卡片密码开始	
+}
+
+//返回值1表示卡片加电OK
+UINT32 IsCard_PwrON_OK(void)
+{
+	if(0xFF == card_pwr_on_st){
+		return 1;
+  }else{
+		return 0;
+	}
+}
+//返回加锁结果
+UINT32 IsCard_PwrON_Result(void)
+{
+	return Command_Card_Info.Command_Result;
+}
+
+void Init_Power_On_End()
+{
+	card_pwr_on_st = 0xFF;	
+  memset(&Command_Card_Info.Card_Command,0,sizeof(SEND_CARD_INFO));
+}
+
+/********/
+void Card_Power_On_Card(int fd)
+{	
+	char card_sn[16] = {"\0"};
+	int Ret =0;
+	int  temp_rmb = 0;
+	switch(card_pwr_on_st){			
+		case 0xFF:{
+			usleep(20000);
+			break;
+		}
+   
+	  case 0x01:{//进行寻卡
+			Ret = MT625_Card_Search(fd);
+			if(Ret == 1){//表示查询到卡片
+				card_pwr_on_st  = 0x02;
+				memset(&card_sn[0], '0', sizeof(card_sn));
+			}
+			break;
+		}
+		case 0x02:{//进行卡片加电
+			Ret = MT625_Card_number(fd, &card_sn[0]);//读取卡号(fd);
+			if((Ret == 5)||(Ret == 3)||(Ret == 4)){ //M1卡
+			  if((0 == memcmp(&card_sn[0], &Command_Card_Info.IC_ID[0], sizeof(Command_Card_Info.IC_ID)))&&(Command_Card_Info.Card_Command == 1)){
+					usleep(10000);
+					Ret = MT625_Card_Write0xAA(fd);//启动充电时写0xAA使卡上锁
+					if(Ret == 24){//卡上锁成功
+						usleep(10000);
+						if(MT625_Card_keysign(fd) == 11){//读卡锁卡标志，上锁成功
+						// if(DEBUGLOG) LogWrite(INFO,"%s","1号枪刷卡之后读卡锁卡标志，上锁成功");  
+							Command_Card_Info.Command_Result = 1;//刷卡操作结果标志 
+              Command_Card_Info.Card_Command  = 0;							
+							card_pwr_on_st  = 0x03;
+						}		
+					}
+				}else{
+					Command_Card_Info.Command_Result = 2;//刷卡操作结果标志 
+					Command_Card_Info.Card_Command  = 0;							
+					card_pwr_on_st  = 0x03;
+				}
+			}else if((Ret == 6)||(Ret == 7)){//CPU卡
+				memset(&card_sn[0], '0', sizeof(card_sn));
+				int Card_State = 0;
+				Ret = IC_SPG_ProDeal(fd, &card_sn[0], &temp_rmb,&Card_State);
+			  if((0 == memcmp(&card_sn[0], &Command_Card_Info.IC_ID[0], sizeof(Command_Card_Info.IC_ID)))&&(Command_Card_Info.Card_Command == 1)){
+				  time_t systime=0;
+					struct tm tm_t;
+				  systime = time(NULL);         //获得系统的当前时间 
+					localtime_r(&systime, &tm_t);  //结构指针指向当前时间
+					
+					if(IC_SPG_Start(fd, &temp_rmb, &tm_t) == 1){//开始加电成功
+			      Command_Card_Info.Command_Result = 1;//刷卡操作结果标志 
+            Command_Card_Info.Card_Command  = 0;
+						card_pwr_on_st  = 0x03;
+					}
+				}else{
+					Command_Card_Info.Command_Result = 2;//刷卡操作结果标志 
+					Command_Card_Info.Card_Command  = 0;							
+					card_pwr_on_st  = 0x03;
+				}
+			}
+			break;
+	  }
+		case 0x03:{//M1进行加电
+			card_pwr_on_st = 0xFF;//done	
+			break;
+		}			
+		default:
+			break;
+	}
+}
+
+
+
+//初始卡上电步骤
+void Init_Card_PowerOff_St(SEND_CARD_INFO*send_card_comd_info)
+{
+  card_pwr_Off_st = 0x01;	//直接从验证卡片密码开始	
+ 	memcpy(&Command_Card_Info.Card_Command, &send_card_comd_info->Card_Command, sizeof(SEND_CARD_INFO));//先保存一下临时卡号
+}
+
+//返回值1表示卡片加电OK
+UINT32 IsCard_PwrOff_OK(void)
+{
+	if(0xFF == card_pwr_Off_st){
+		return 1;
+  }else{
+		return 0;
+	}
+}
+//返回解锁结果
+UINT32 IsCard_PwrOff_Result(void)
+{
+	return Command_Card_Info.Command_Result;
+}
+
+void Init_Power_Off_End()
+{
+	card_pwr_Off_st = 0xFF;	
+  memset(&Command_Card_Info.Card_Command,0,sizeof(SEND_CARD_INFO));
+}
+
+
+/********/
+void Card_Power_Off_Card(int fd)
+{	
+  char card_sn[16] = {"\0"};
+	int temp_rmb = 0,Card_State= 0;
+	int Ret = 0;
+	switch(card_pwr_Off_st){			
+		case 0xFF:{
+			usleep(20000);
+			break;
+		}
+	  case 0x01:{//进行寻卡
+			Ret = MT625_Card_Search(fd);
+			if(Ret == 1){//表示查询到卡片
+				card_pwr_Off_st  = 0x02;
+				memset(&card_sn[0], '0', sizeof(card_sn));
+			}
+			break;
+		}
+		case 0x02:{//进行卡片扣费
+			Ret = MT625_Card_number(fd, &card_sn[0]);//读取卡号(fd);
+			if((Ret == 5)||(Ret == 3)||(Ret == 4)){ //M1卡
+			  if((0 == memcmp(&card_sn[0], &Command_Card_Info.IC_ID[0], sizeof(Command_Card_Info.IC_ID)))&&(Command_Card_Info.Card_Command == 2)){
+					usleep(10000);
+					Ret = MT625_Pay_Delete(fd, Command_Card_Info.Last_IC_money,Command_Card_Info.Command_IC_money);//扣费
+					//if(DEBUGLOG) LogWrite(INFO,"卡号:%s 1号枪需要扣费情况: 余额:%d 消费:%d",&Command_Card_Info.IC_ID[0],Command_Card_Info.Last_IC_money,Command_Card_Info.Command_IC_money);  
+					if(Ret == 30){//扣费成功
+						usleep(10000);
+						Ret = 0;
+						int Ret_rmb_1 = 0;
+						int Ret_rmb_2 = 0;
+						int ls_temp_rmb_1 = 0;
+						int ls_temp_rmb_2 = 0;
+						usleep(20000);
+						Ret = MT625_Card_Money(fd, &temp_rmb);
+						usleep(20000);
+						Ret_rmb_1 = MT625_Card_Money(fd, &ls_temp_rmb_1);
+						usleep(20000);
+						Ret_rmb_2 = MT625_Card_Money(fd, &ls_temp_rmb_2);//读卡锁卡标志，判断卡处于上锁还是解锁
+						if((Ret == 18)&&(Ret_rmb_1 == 18)&&(Ret_rmb_2 == 18)&&(ls_temp_rmb_1 == temp_rmb)&&(ls_temp_rmb_1 == ls_temp_rmb_2)){
+							int lsrmb1 = (Command_Card_Info.Last_IC_money - Command_Card_Info.Command_IC_money);
+							lsrmb1 = (lsrmb1<0)?0:lsrmb1; 
+							if(temp_rmb == lsrmb1){//读取卡金额和扣费之后的金额一样
+								usleep(10000);
+								Ret = MT625_Card_Write0x55(fd);//扣费后解锁
+								if(Ret == 27){
+									usleep(10000);
+									if(MT625_Card_keysign(fd) == 12){//解锁成功
+									 Command_Card_Info.Command_Result = 1;//刷卡操作结果标志  
+									 card_pwr_Off_st  = 0x03;
+									}
+								}
+							}
+						}
+					}
+				}else{ //卡号不一样
+					Command_Card_Info.Command_Result = 2;//刷卡操作结果标志  
+					card_pwr_Off_st  = 0x03;
+				}
+			}else if((Ret == 6)||(Ret == 7)){//CPU卡
+				memset(&card_sn[0], '0', sizeof(card_sn));
+				Ret = IC_SPG_ProDeal(fd, &card_sn[0], &temp_rmb,&Card_State);
+			  if((0 == memcmp(&card_sn[0], &Command_Card_Info.IC_ID[0], sizeof(Command_Card_Info.IC_ID)))&&(Command_Card_Info.Card_Command == 2))
+			  {
+				if(IC_SPG_Stop(fd, Command_Card_Info.Command_IC_money) == 1)
+				{
+					Command_Card_Info.Command_Result = 1;//刷卡操作结果标志  
+					  card_pwr_Off_st  = 0x03;
+				}
+			  }else{
+					Command_Card_Info.Command_Result = 2;//刷卡操作结果标志  
+				  card_pwr_Off_st  = 0x03;
+				}
+			}
+			break;
+	  }
+		case 0x03:{//M1进行加电
+			card_pwr_Off_st = 0xFF;//done	
+			break;
+		}			
+		default:
+			break;
+	}
+}
+
 
 /*********************************************************************************************************
 ** Function name:           IC_Task  
 ** Descriptions:            刷卡器通信任务	
-** input parameters:        
+** input parameters:        para---串口设备名称字符串 
 ** output parameters:          
 ** Returned value:           
 ** Created by:		    	
@@ -1120,1012 +1583,51 @@ int IC_SPG_MT318_Read_unlock_time(int fd)
 ** Modified date:           	
 **--------------------------------------------------------------------------------------------------------
 *********************************************************************************************************/
-void IC_Task()
+void IC_Task(void* para)
 {
-	int fd, Ret=0, Ret1=0,Ret_rmb_1=0,Ret_rmb_2=0;
-	UINT32 door_open_flag=0;
-  UINT32 pay_step_1 =255,pay_step_2 =255;
-	CHARGER_MSG msg;
+	int fd =0;
+	int old_Find_DZ_Step = 0;
+	int old_card_pwr_on_st = 0;
+	int old_card_pwr_Off_st = 0;
 
-	UINT8 card_sn[16];     //用户卡号
-	UINT32 temp_rmb = 0,ls_temp_rmb_1 = 0,ls_temp_rmb_2 = 0;   //
-	UINT32 temp = 0,IC_com_count = 0;
-  char card_state[4];
-	time_t systime=0;
-	struct tm tm_t;
-
-	fd = OpenDev(IC_COMID);
+	//UINT8 card_sn[16];     //用户卡号
+	//UINT32 temp_rmb = 0,ls_temp_rmb_1 = 0,ls_temp_rmb_2 = 0;   //
+	//UINT32 temp = 0;
+	//time_t systime=0;
+	//struct tm tm_t;
+	Com_run_para com_thread_para = *((Com_run_para*)para);
+	
+	fd = OpenDev(com_thread_para.com_dev_name);
 	if(fd == -1) {
 		while(1);
 	}else{
-		set_speed(fd, 115200);
-		set_Parity(fd, 8, 1, 0);
+		set_speed(fd, com_thread_para.com_baud);
+		//set_Parity(fd, 8, 1, 0);
+		set_Parity(fd, com_thread_para.com_data_bits, com_thread_para.com_stop_bits, com_thread_para.even_odd);
 		close(fd);
   }
-	fd = OpenDev(IC_COMID);
+	fd = OpenDev(com_thread_para.com_dev_name);
 	if(fd == -1) {
 		while(1);
 	}
-	prctl(PR_SET_NAME,(unsigned long)"IC_Task");//设置线程名字 
-
-	while(1){
+	prctl(PR_SET_NAME,(unsigned long)"ic_task");//设置线程名字
+	while(1)
+	{
 		usleep(20000);
-		if((Globa_1->pay_step != pay_step_1)||(Globa_2->pay_step != pay_step_2)){
-			pay_step_1 = Globa_1->pay_step;
-			pay_step_2 = Globa_2->pay_step;
-			printf(" xxxxxxxxxxxxxxGloba_1->pay_step= %d Globa_2->pay_step= %d-----\n", Globa_1->pay_step,Globa_2->pay_step);
-		}		
-		
-		
-		
-		
-		
-		// 优先级顺序 刷卡启动 ，后面三个并列（刷卡停止预约 刷卡停止充电 刷卡结算 ）
-		if(Globa_1->pay_step == 1){//在等待刷卡启动界面
-			Ret = MT625_Card_Search(fd); //寻卡
-			if(Ret == 1){//寻卡成功
-				usleep(20000);
-				memset(&card_sn[0], '0', sizeof(card_sn));
-			  Ret = MT625_Card_number(fd, &card_sn[0]);//读取卡号
-				if(((Globa_2->pay_step == 2)||(Globa_2->pay_step == 3)||(Globa_2->pay_step == 4))&& \
-    		  (0 == memcmp(&Globa_2->card_sn[0], &card_sn[0], sizeof(Globa_2->card_sn)))){
-				  Globa_1->checkout = 6;//卡片已占用
-           //printf("卡片已被抢2占用 7777777777777777 Globa_1->pay_step= %d,Globa_1->checkout= %d,Globa_2->pay_step= %d,Globa_2->checkout= %d,\r\n",Globa_1->pay_step,Globa_1->checkout,Globa_2->pay_step,Globa_2->checkout);
-				  continue;//同一张卡不能启动同一台机器的另一把枪
-    	  }
-			  if((Ret == 5)||(Ret == 3)||(Ret == 4)){//5：用户卡、4：员工卡、3：管理卡 -M1卡
-					if(0 == memcmp(&card_sn[0], "0000000000000000", sizeof(card_sn))){
-						 continue;
-					}
-					if(valid_card_check(&card_sn[0]) > 0){
-						 Globa_1->checkout = 9;//黑名单 
-						 continue;
-					}
-					if(MT625_Card_State(fd, card_state) == 8){
-			
-					}else{
-						continue;
-					}
-					
-					if((card_sn[0] == '6')&&(card_sn[1] == '8')){//员工卡
-					  if(0 == memcmp(&Globa_1->card_sn[0], "0000000000000000", sizeof(Globa_1->card_sn))){
-						 usleep(20000);
-						 Ret = MT625_Card_Money(fd, &temp_rmb);
-					    if(Ret == 18){
-							 if(card_state[3] ==  0xAA){//允许特殊卡进行离线处理 
-									Globa_1->Special_card_offline_flag = 1;//允许特殊卡进行离线处理标记
-								}else{
-									Globa_1->Special_card_offline_flag = 0;
-								}
-								
-								if(card_state[0] ==  0xAA){//企业号
-									Globa_1->qiyehao_flag = 1;//企业号标记，
-								}else{
-									Globa_1->qiyehao_flag = 0;
-								}
-								
-								if(card_state[1] ==  0xAA){//特定电价卡；
-									Globa_1->private_price_flag = 1 ;//私有电价标记，
-								}else{
-									Globa_1->private_price_flag = 0;
-								}
-								
-								if(card_state[2] ==  0xAA){//特定时间卡
-									Globa_1->order_chg_flag = 1;//有序充电用户卡标记
-								}else{
-									Globa_1->order_chg_flag = 0;
-								}
-								
-						    Globa_1->last_rmb = temp_rmb;//读取卡金额
-						    Globa_1->checkout = 3;//刷卡操作结果标志    0：未知 1：灰锁 2：补充交易 3：卡片正常 4：无法识别卡片  5：卡片状态异 6：卡片已占用 7：非充电卡
-						  	memcpy(&Globa_1->card_sn[0], &card_sn[0], sizeof(Globa_1->card_sn));//先保存一下卡号
-								if(DEBUGLOG) CARD_RUN_LogOut("卡号：%s %s %d","1号枪刷卡之后读取卡金额 员工卡：",&Globa_1->card_sn[0],Globa_1->last_rmb);  
-							}
-						}
-    		  }else if(!((card_sn[0] == '6')&&((card_sn[1] == '8')||(card_sn[1] == '9')))){//用户卡
-					  if(0 == memcmp(&Globa_1->card_sn[0], "0000000000000000", sizeof(Globa_1->card_sn))){
-							Ret = 0;
-							Ret_rmb_1 = 0;
-							Ret_rmb_2 = 0;
-							temp_rmb = 0;
-							ls_temp_rmb_1 = 0;
-							ls_temp_rmb_2 = 0;
-							usleep(20000);
-							Ret = MT625_Card_Money(fd, &temp_rmb);
-							usleep(20000);
-							Ret_rmb_1 = MT625_Card_Money(fd, &ls_temp_rmb_1);
-							usleep(20000);
-							Ret_rmb_2 = MT625_Card_Money(fd, &ls_temp_rmb_2);
-							if((Ret == 18)&&(Ret_rmb_1 == 18)&&(Ret_rmb_2 == 18)&&(ls_temp_rmb_1 == temp_rmb)&&(ls_temp_rmb_1 == ls_temp_rmb_2)){
-								Globa_1->last_rmb = temp_rmb;//读取卡金额
-						  	if(DEBUGLOG) CARD_RUN_LogOut("卡号：%s -1号枪刷卡之后读取卡金额-用户卡:%d",&card_sn[0],Globa_1->last_rmb);  
-							  if(card_state[3] ==  0xAA){//允许特殊卡进行离线处理 
-									Globa_1->Special_card_offline_flag = 1;//允许特殊卡进行离线处理标记
-								}else{
-									Globa_1->Special_card_offline_flag = 0;
-								}
-								if(card_state[0] ==  0xAA){//企业号
-									Globa_1->qiyehao_flag = 1;//企业号标记，
-								}else{
-									Globa_1->qiyehao_flag = 0;
-								}
-								
-								if(card_state[1] ==  0xAA){//特定电价卡；
-									Globa_1->private_price_flag = 1 ;//私有电价标记，
-								}else{
-									Globa_1->private_price_flag = 0;
-								}
-								
-								if(card_state[2] ==  0xAA){//特定时间卡
-									Globa_1->order_chg_flag = 1;//有序充电用户卡标记
-								}else{
-									Globa_1->order_chg_flag = 0;
-								}
-		
-								//if(DEBUGLOG) CARD_RUN_LogOut("卡号：%s -1号枪刷卡卡状态 %d:%d:%d",&card_sn[0],Globa_1->qiyehao_flag,Globa_1->order_chg_flag,Globa_1->private_price_flag);  
-								if(Globa_1->qiyehao_flag == 0){//企业卡号不锁卡
-
-									usleep(20000);//读卡器命令帧间隔时间需大于20MS
-									Ret = MT625_Card_keysign(fd);//读卡锁卡标志，判断卡处于上锁还是解锁
-									if(Ret == 12){//表明此卡处于解锁
-										if(((Globa_1->last_rmb <= 50)&&(Globa_1->Charger_param.Serv_Type != 1))||(((Globa_1->last_rmb <= 50)||(Globa_1->last_rmb <= Globa_1->Charger_param.Serv_Price))&&(Globa_1->Charger_param.Serv_Type == 1))){
-											memcpy(&Globa_1->card_sn[0], &card_sn[0], sizeof(Globa_1->card_sn));//先保存一下卡号
-											Globa_1->checkout = 8;//刷卡操作结果标志    0：未知 1：灰锁 2：补充交易 3：卡片正常 4：无法识别卡片  5：卡片状态异 6：卡片已占用 7：非充电卡
-										}else{
-											Globa_1->checkout = 12;//过渡
-											memcpy(&Globa_1->card_sn[0], &card_sn[0], sizeof(Globa_1->card_sn));//先保存一下卡号
-											if(Globa_1->User_Card_check_result == 1){
-												usleep(20000);
-												Ret = MT625_Card_Write0xAA(fd);//启动充电时写0xAA使卡上锁
-												if(Ret == 24){//卡上锁成功
-												//	memcpy(&Globa_1->card_sn[0], &card_sn[0], sizeof(Globa_1->card_sn));//先保存一下卡号
-													//Globa_1->checkout = 1;//刷卡操作结果标志    0：未知 1：灰锁 2：补充交易 3：卡片正常 4：无法识别卡片  5：卡片状态异 6：卡片已占用 7：非充电卡
-													memcpy(&Globa_1->tmp_card_sn[0], &card_sn[0], sizeof(Globa_1->tmp_card_sn));//先保存一下临时卡号
-												//}
-													usleep(20000);
-													if(MT625_Card_keysign(fd) == 11){//读卡锁卡标志，上锁成功
-														Globa_1->checkout = 1;//刷卡操作结果标志    0：未知 1：灰锁 2：补充交易 3：卡片正常 4：无法识别卡片  5：卡片状态异 6：卡片已占用 7：非充电卡
-													}	
-												}
-											}
-										}
-									}else if(Ret == 11){//卡灰锁
-										if(!((card_sn[0] == '6')&&((card_sn[1] == '8')||(card_sn[1] == '9')))){//表明此用户卡处于灰锁
-											if(0 == memcmp(&Globa_1->card_sn[0], &card_sn[0], sizeof(Globa_1->card_sn))){//与先保存的临时卡号一致
-												//memcpy(&Globa_1->card_sn[0], &card_sn[0], sizeof(Globa_1->card_sn));//先保存一下卡号
-												Globa_1->checkout = 1;//刷卡操作结果标志    0：未知 1：灰锁 2：补充交易 3：卡片正常 4：无法识别卡片  5：卡片状态异 6：卡片已占用 7：非充电卡
-												continue;//结束本次循环，从新开始
-											}
-										  Globa_1->checkout = 5;
-										}
-									}
-							  }else{
-									memcpy(&Globa_1->card_sn[0], &card_sn[0], sizeof(Globa_1->card_sn));//先保存一下卡号
-									Globa_1->checkout = 1;
-								}
-						  }else {
-								if(DEBUGLOG) CARD_RUN_LogOut("1号枪三次读出的余额为%d :%d :%d 结果反馈%d :%d :%d",temp_rmb,ls_temp_rmb_1,ls_temp_rmb_2,Ret,Ret_rmb_1,Ret_rmb_2);  
-							}
-							/*else{ 
-								Globa_1->checkout = 5;//置卡片异常状态
-							}*/
-			      }else if(0 == memcmp(&Globa_1->card_sn[0], &card_sn[0], sizeof(Globa_1->card_sn))){
-							//if(Globa_1->checkout == 12){
-								if(Globa_1->qiyehao_flag == 0){//企业卡号不锁卡
-									if(Globa_1->User_Card_check_result == 1){
-										usleep(20000);
-										Ret = MT625_Card_Write0xAA(fd);//启动充电时写0xAA使卡上锁
-										if(Ret == 24){//卡上锁成功
-											usleep(20000);
-											if(MT625_Card_keysign(fd) == 11){//读卡锁卡标志，上锁成功
-												Globa_1->checkout = 1;//刷卡操作结果标志    0：未知 1：灰锁 2：补充交易 3：卡片正常 4：无法识别卡片  5：卡片状态异 6：卡片已占用 7：非充电卡
-											 if(DEBUGLOG) CARD_RUN_LogOut("%s","1号枪刷卡之后读卡锁卡标志，上锁成功");  
-											}										
-										}
-										/*else{
-											Globa_1->checkout = 5;//上锁失败，刷卡操作结果标志    0：未知 1：灰锁 2：补充交易 3：卡片正常 4：无法识别卡片  5：卡片状态异 6：卡片已占用 7：非充电卡
-										}*/
-									}
-								}else{
-									Globa_1->checkout = 1;
-								}
-							//}
-						}
-      	  }else{
-      		  Globa_1->checkout = 7;//其他卡，非充电卡
-    	    }
-		    }else if((Ret == 6)||(Ret == 7)){//CPU卡
-		      memset(&card_sn[0], '0', sizeof(card_sn));
-			    Ret = IC_SPG_ProDeal(fd, &card_sn[0], &temp_rmb);
-					if(0 == memcmp(&card_sn[0], "0000000000000000", sizeof(card_sn))){
-						continue;
-					}
-					
-					if((Ret == 1)||(Ret == 3)){//卡片处理失败，请重新操作
-						Globa_1->checkout = 0;
-					}else if(Ret == 2){//无法识别卡片
-						Globa_1->checkout = 4;
-					}else if((Ret == 4)||(Ret == 7)){//卡状态异常
-						Globa_1->checkout = 5;
-					}else if(Ret == 5){//交易处理 卡片正常
-						if(((Globa_2->pay_step == 2)||(Globa_2->pay_step == 3)||(Globa_2->pay_step == 4))&& \
-    		     (0 == memcmp(&Globa_2->card_sn[0], &card_sn[0], sizeof(Globa_2->card_sn)))){
-				     Globa_1->checkout = 6;//卡片已占用
-             //printf("卡片已被抢2占用 7777777777777777 Globa_1->pay_step= %d,Globa_1->checkout= %d,Globa_2->pay_step= %d,Globa_2->checkout= %d,\r\n",Globa_1->pay_step,Globa_1->checkout,Globa_2->pay_step,Globa_2->checkout);
-				     continue;//同一张卡不能启动同一台机器的另一把枪
-    	      }
-						if(valid_card_check(&card_sn[0]) > 0){
-						  Globa_1->checkout = 9;//黑名单 
-						  continue;
-					  }
-						if((card_sn[0] == '6')&&(card_sn[1] == '8')){
-							if(0 == memcmp(&Globa_1->card_sn[0], "0000000000000000", sizeof(Globa_1->card_sn))){
-								memcpy(&Globa_1->card_sn[0], &card_sn[0], sizeof(Globa_1->card_sn));//先保存一下卡号
-								Globa_1->last_rmb = temp_rmb;
-							  Globa_1->checkout = 3;//刷卡操作结果标志    0：未知 1：灰锁 2：补充交易 3：卡片正常 4：无法识别卡片  5：卡片状态异 6：卡片已占用 7：非充电卡
-							}
-						}else if(!((card_sn[0] == '6')&&((card_sn[1] == '8')||(card_sn[1] == '9')))){
-							if(0 == memcmp(&Globa_1->card_sn[0], "0000000000000000", sizeof(Globa_1->card_sn))){
-								memcpy(&Globa_1->tmp_card_sn[0], &card_sn[0], sizeof(Globa_1->tmp_card_sn));//先保存一下临时卡号
-								Globa_1->last_rmb = temp_rmb;
-							  if(((Globa_1->last_rmb <= 50)&&(Globa_1->Charger_param.Serv_Type != 1))||(((Globa_1->last_rmb <= 50)||(Globa_1->last_rmb <= Globa_1->Charger_param.Serv_Price))&&(Globa_1->Charger_param.Serv_Type == 1))){
-								  memcpy(&Globa_1->card_sn[0], &card_sn[0], sizeof(Globa_1->card_sn));//先保存一下卡号
-									Globa_1->checkout = 8;//刷卡操作结果标志    0：未知 1：灰锁 2：补充交易 3：卡片正常 4：无法识别卡片  5：卡片状态异 6：卡片已占用 7：非充电卡
-								}else{
-									Globa_1->checkout = 12;//过渡
-									memcpy(&Globa_1->card_sn[0], &card_sn[0], sizeof(Globa_1->card_sn));//先保存一下卡号
-									if(Globa_1->User_Card_check_result == 1){
-										systime = time(NULL);         //获得系统的当前时间 
-										localtime_r(&systime, &tm_t);  //结构指针指向当前时间
-										usleep(10000);//读卡器命令帧间隔时间需大于20MS
-										Ret = IC_SPG_Start(fd, &temp_rmb, &tm_t);//开始加电
-										if(Ret == 1){//开始加电成功
-										//	memcpy(&Globa_1->card_sn[0], &card_sn[0], sizeof(Globa_1->card_sn));//先保存一下卡号
-											Globa_1->checkout = 1;//刷卡操作结果标志    0：未知 1：灰锁 2：补充交易 3：卡片正常 4：无法识别卡片  5：卡片状态异 6：卡片已占用 7：非充电卡
-											if(DEBUGLOG) CARD_RUN_LogOut("%s","1号枪刷卡上锁成功");  
-										}
-									}
-								}
-							}else if(0 == memcmp(&Globa_1->card_sn[0], &card_sn[0], sizeof(Globa_1->card_sn))){
-								if(Globa_1->checkout == 12){
-									if(Globa_1->User_Card_check_result == 1){
-										systime = time(NULL);         //获得系统的当前时间 
-										localtime_r(&systime, &tm_t);  //结构指针指向当前时间
-										usleep(10000);//读卡器命令帧间隔时间需大于20MS
-										Ret = IC_SPG_Start(fd, &temp_rmb, &tm_t);//开始加电
-										if(Ret == 1){//开始加电成功
-											//memcpy(&Globa_1->card_sn[0], &card_sn[0], sizeof(Globa_1->card_sn));//先保存一下卡号
-											Globa_1->checkout = 1;//刷卡操作结果标志    0：未知 1：灰锁 2：补充交易 3：卡片正常 4：无法识别卡片  5：卡片状态异 6：卡片已占用 7：非充电卡
-										}
-									}
-								}
-							}
-						}else {
-							Globa_1->checkout = 7;//其他卡，
-						}
-					}else if(Ret == 6){//交易处理 灰锁
-						if(!((card_sn[0] == '6')&&((card_sn[1] == '8')||(card_sn[1] == '9')))){
-							if(0 == memcmp(&Globa_1->tmp_card_sn[0], &card_sn[0], sizeof(Globa_1->tmp_card_sn))){//与先保存的临时卡号一致
-								memcpy(&Globa_1->card_sn[0], &card_sn[0], sizeof(Globa_1->card_sn));//先保存一下卡号
-								Globa_1->checkout = 1;//刷卡操作结果标志    0：未知 1：灰锁 2：补充交易 3：卡片正常 4：无法识别卡片  5：卡片状态异 6：卡片已占用 7：非充电卡
-								continue;//刷卡成功，结束本次循环，从新开始
-							}
-						}
-						Globa_1->checkout = 5;//置卡片异常状态
-					}
-				}
-			}
-		/*	else if(Ret == 2){
-			  Globa_1->checkout = 0;//无卡，或寻卡不成功
-			}*/	
-		}else if(Globa_2->pay_step == 1){//在等待刷卡启动界面
-			Ret = MT625_Card_Search(fd); //寻卡
-			if(Ret == 1){//寻卡成功
-				usleep(20000);
-				memset(&card_sn[0], '0', sizeof(card_sn));
-			  Ret = MT625_Card_number(fd, &card_sn[0]);//读取卡号
-				if(((Globa_1->pay_step == 2)||(Globa_1->pay_step == 3)||(Globa_1->pay_step == 4))&& \
-    		  (0 == memcmp(&Globa_1->card_sn[0], &card_sn[0], sizeof(Globa_1->card_sn)))){
-				  Globa_2->checkout = 6;//卡片已占用
-           //printf("卡片已被抢1占用 7777777777777777 Globa_2->pay_step= %d,Globa_12->checkout= %d,Globa_1->pay_step= %d,Globa_1->checkout= %d,\r\n",Globa_2->pay_step,Globa_2->checkout,Globa_1->pay_step,Globa_1->checkout);
-				  continue;//同一张卡不能启动同一台机器的另一把枪
-    	  }
-			  if((Ret == 5)||(Ret == 3)||(Ret == 4)){//5：用户卡、4：员工卡、3：管理卡 -M1卡
-					if(0 == memcmp(&card_sn[0], "0000000000000000", sizeof(card_sn))){
-						 continue;
-					}
-				  if(valid_card_check(&card_sn[0]) > 0){
-						Globa_2->checkout = 9;//黑名单 
-					  continue;
-					}
-					if(MT625_Card_State(fd, card_state) == 8){
-					}else{
-						continue;
-					}
-					
-					if((card_sn[0] == '6')&&(card_sn[1] == '8')){//员工卡
-					  if(0 == memcmp(&Globa_2->card_sn[0], "0000000000000000", sizeof(Globa_2->card_sn))){
-						 	usleep(20000);
-						  Ret = MT625_Card_Money(fd, &temp_rmb);
-					    if(Ret == 18){
-							  if(card_state[3] ==  0xAA){//允许特殊卡进行离线处理 
-									Globa_2->Special_card_offline_flag = 1;//允许特殊卡进行离线处理标记
-								}else{
-									Globa_2->Special_card_offline_flag = 0;
-								}
-								
-								if(card_state[0] ==  0xAA){//企业号
-									Globa_2->qiyehao_flag = 1;//企业号标记，
-								}else{
-									Globa_2->qiyehao_flag = 0;
-								}
-								
-								if(card_state[1] ==  0xAA){//特定电价卡；
-									Globa_2->private_price_flag = 1 ;//私有电价标记，
-								}else{
-									Globa_2->private_price_flag = 0;
-								}
-								
-								if(card_state[2] ==  0xAA){//特定时间卡
-									Globa_2->order_chg_flag = 1;//有序充电用户卡标记
-								}else{
-									Globa_2->order_chg_flag = 0;
-								}
-								
-						    memcpy(&Globa_2->card_sn[0], &card_sn[0], sizeof(Globa_2->card_sn));//先保存一下卡号
-						    Globa_2->last_rmb = temp_rmb;//读取卡金额
-						    Globa_2->checkout = 3;//刷卡操作结果标志    0：未知 1：灰锁 2：补充交易 3：卡片正常 4：无法识别卡片  5：卡片状态异 6：卡片已占用 7：非充电卡
-						  	if(DEBUGLOG) CARD_RUN_LogOut("卡号：%s -2号枪刷卡之后读取卡金额:%d",&Globa_2->card_sn[0],Globa_2->last_rmb);  
-							}
-						}
-    		  }else if(!((card_sn[0] == '6')&&((card_sn[1] == '8')||(card_sn[1] == '9')))){//用户卡
-					  if(0 == memcmp(&Globa_2->card_sn[0], "0000000000000000", sizeof(Globa_2->card_sn))){
-							Ret = 0;
-							Ret_rmb_1 = 0;
-							Ret_rmb_2 = 0;
-							temp_rmb = 0;
-							ls_temp_rmb_1 = 0;
-							ls_temp_rmb_2 = 0;
-							usleep(20000);
-							Ret = MT625_Card_Money(fd, &temp_rmb);
-							usleep(20000);
-							Ret_rmb_1 = MT625_Card_Money(fd, &ls_temp_rmb_1);
-							usleep(20000);
-							Ret_rmb_2 = MT625_Card_Money(fd, &ls_temp_rmb_2);
-							if((Ret == 18)&&(Ret_rmb_1 == 18)&&(Ret_rmb_2 == 18)&&(ls_temp_rmb_1 == temp_rmb)&&(ls_temp_rmb_1 == ls_temp_rmb_2)){
-								Globa_2->last_rmb = temp_rmb;//读取卡金额
-							 
-							 if(card_state[3] ==  0xAA){//允许特殊卡进行离线处理 
-									Globa_2->Special_card_offline_flag = 1;//允许特殊卡进行离线处理标记
-								}else{
-									Globa_2->Special_card_offline_flag = 0;
-								}
-								
-								if(card_state[0] ==  0xAA){//企业号
-									Globa_2->qiyehao_flag = 1;//企业号标记，
-								}else{
-									Globa_2->qiyehao_flag = 0;
-								}
-								
-								if(card_state[1] ==  0xAA){//特定电价卡；
-									Globa_2->private_price_flag = 1 ;//私有电价标记，
-								}else{
-									Globa_2->private_price_flag = 0;
-								}
-								
-								if(card_state[2] ==  0xAA){//特定时间卡
-									Globa_2->order_chg_flag = 1;//有序充电用户卡标记
-								}else{
-									Globa_2->order_chg_flag = 0;
-								}
-								
-								if(Globa_2->qiyehao_flag == 0){//企业卡号不锁卡
-									if(DEBUGLOG) CARD_RUN_LogOut("卡号：%s -2号枪刷卡之后读取卡金额:%d",&card_sn[0],Globa_2->last_rmb);  
-									usleep(20000);//读卡器命令帧间隔时间需大于20MS
-									Ret = MT625_Card_keysign(fd);//读卡锁卡标志，判断卡处于上锁还是解锁
-									if(Ret == 12){//表明此卡处于解锁
-										if(((Globa_2->last_rmb <= 50)&&(Globa_2->Charger_param.Serv_Type != 1))||(((Globa_2->last_rmb <= 50)||(Globa_2->last_rmb <= Globa_2->Charger_param.Serv_Price))&&(Globa_2->Charger_param.Serv_Type == 1))){
-											memcpy(&Globa_2->card_sn[0], &card_sn[0], sizeof(Globa_2->card_sn));//先保存一下卡号
-											Globa_2->checkout = 8;//刷卡操作结果标志    0：未知 1：灰锁 2：补充交易 3：卡片正常 4：无法识别卡片  5：卡片状态异 6：卡片已占用 7：非充电卡
-											if(DEBUGLOG) CARD_RUN_LogOut("%s Serv_Price=%d Serv_Type=%d ","2号枪刷卡余额不足",Globa_2->Charger_param.Serv_Price,Globa_2->Charger_param.Serv_Type);  
-										}else{
-											Globa_2->checkout = 12;
-											memcpy(&Globa_2->card_sn[0], &card_sn[0], sizeof(Globa_2->card_sn));//先保存一下卡号
-									
-											if(Globa_2->User_Card_check_result == 1){
-												usleep(20000);
-												Ret = MT625_Card_Write0xAA(fd);//启动充电时写0xAA使卡上锁
-												if(Ret == 24){//卡上锁成功
-													usleep(20000);
-													if(MT625_Card_keysign(fd) == 11){//读卡锁卡标志，上锁成功
-														Globa_2->checkout = 1;//刷卡操作结果标志    0：未知 1：灰锁 2：补充交易 3：卡片正常 4：无法识别卡片  5：卡片状态异 6：卡片已占用 7：非充电卡
-														if(DEBUGLOG) CARD_RUN_LogOut("%s","2号枪刷卡上锁成功");  
-													}		
-													//memcpy(&Globa_2->card_sn[0], &card_sn[0], sizeof(Globa_2->card_sn));//先保存一下卡号
-													memcpy(&Globa_2->tmp_card_sn[0], &card_sn[0], sizeof(Globa_2->tmp_card_sn));//先保存一下临时卡号
-												//}
-												}
-												/*else{
-													Globa_1->checkout = 5;//上锁失败，刷卡操作结果标志    0：未知 1：灰锁 2：补充交易 3：卡片正常 4：无法识别卡片  5：卡片状态异 6：卡片已占用 7：非充电卡
-												}*/
-											}
-								    }
-									}else if(Ret == 11){//卡灰锁
-										if(!((card_sn[0] == '6')&&((card_sn[1] == '8')||(card_sn[1] == '9')))){//表明此用户卡处于灰锁
-											if(0 == memcmp(&Globa_2->card_sn[0], &card_sn[0], sizeof(Globa_2->card_sn))){//与先保存的临时卡号一致
-												Globa_2->checkout = 1;//刷卡操作结果标志    0：未知 1：灰锁 2：补充交易 3：卡片正常 4：无法识别卡片  5：卡片状态异 6：卡片已占用 7：非充电卡
-												continue;//结束本次循环，从新开始
-											}
-										}
-										Globa_2->checkout = 5;//置卡片异常状态
-									}
-							  }else{
-									memcpy(&Globa_2->card_sn[0], &card_sn[0], sizeof(Globa_2->card_sn));//先保存一下卡号
-						     // Globa_2->last_rmb = temp_rmb;//读取卡金额
-									Globa_2->checkout = 1;//企业卡号不用锁操作//刷卡操作结果标志    0：未知 1：灰锁 2：补充交易 3：卡片正常 4：无法识别卡片  5：卡片状态异 6：卡片已占用 7：非充电卡
-								}
-					  	}else{
-								if(DEBUGLOG) CARD_RUN_LogOut("2号枪三次读出的余额为%d :%d :%d 结果反馈%d :%d :%d",temp_rmb,ls_temp_rmb_1,ls_temp_rmb_2,Ret,Ret_rmb_1,Ret_rmb_2);  
-							}
-							/*else{ 
-								Globa_1->checkout = 5;//置卡片异常状态
-							}*/
-			      }else if(0 == memcmp(&Globa_2->card_sn[0], &card_sn[0], sizeof(Globa_2->card_sn))){
-							//if(Globa_2->checkout == 12){
-								if(Globa_2->qiyehao_flag == 0){//企业卡号不锁卡
-									if(Globa_2->User_Card_check_result == 1){
-										usleep(20000);
-										Ret = MT625_Card_Write0xAA(fd);//启动充电时写0xAA使卡上锁
-										if(Ret == 24){//卡上锁成功
-											usleep(20000);
-											if(MT625_Card_keysign(fd) == 11){//读卡锁卡标志，上锁成功
-												Globa_2->checkout = 1;//刷卡操作结果标志    0：未知 1：灰锁 2：补充交易 3：卡片正常 4：无法识别卡片  5：卡片状态异 6：卡片已占用 7：非充电卡
-												if(DEBUGLOG) CARD_RUN_LogOut("%s","2号枪刷卡上锁成功");  
-											}		
-										}
-										/*else{
-											Globa_1->checkout = 5;//上锁失败，刷卡操作结果标志    0：未知 1：灰锁 2：补充交易 3：卡片正常 4：无法识别卡片  5：卡片状态异 6：卡片已占用 7：非充电卡
-										}*/
-									}
-								}else{
-									Globa_2->checkout = 1;
-								}
-							//}
-						}
-      	  }else{
-      		  Globa_2->checkout = 7;//其他卡，非充电卡
-    	    }
-		    }else if((Ret == 6)||(Ret == 7)){//CPU卡
-		      memset(&card_sn[0], '0', sizeof(card_sn));
-			    Ret = IC_SPG_ProDeal(fd, &card_sn[0], &temp_rmb);
-					if(0 == memcmp(&card_sn[0], "0000000000000000", sizeof(card_sn))){
-						 continue;
-					}
-					if((Ret == 1)||(Ret == 3)){//卡片处理失败，请重新操作
-						Globa_2->checkout = 0;
-					}else if(Ret == 2){//无法识别卡片
-						Globa_2->checkout = 4;
-					}else if((Ret == 4)||(Ret == 7)){//卡状态异常
-						Globa_2->checkout = 5;
-					}else if(Ret == 5){//交易处理 卡片正常
-						if(((Globa_1->pay_step == 2)||(Globa_1->pay_step == 3)||(Globa_1->pay_step == 4))&& \
-						  (0 == memcmp(&Globa_1->card_sn[0], &card_sn[0], sizeof(Globa_1->card_sn)))){
-						   Globa_2->checkout = 6;//卡片已占用
-						    //printf("卡片已被抢1占用 7777777777777777 Globa_2->pay_step= %d,Globa_12->checkout= %d,Globa_1->pay_step= %d,Globa_1->checkout= %d,\r\n",Globa_2->pay_step,Globa_2->checkout,Globa_1->pay_step,Globa_1->checkout);
-						   continue;//同一张卡不能启动同一台机器的另一把枪
-					  }
-						if(valid_card_check(&card_sn[0]) > 0){
-						  Globa_1->checkout = 9;//黑名单 
-						  continue;
-					  }
-						if((card_sn[0] == '6')&&(card_sn[1] == '8')){
-							if(0 == memcmp(&Globa_2->card_sn[0], "0000000000000000", sizeof(Globa_2->card_sn))){
-								memcpy(&Globa_2->card_sn[0], &card_sn[0], sizeof(Globa_2->card_sn));//先保存一下卡号
-								Globa_2->last_rmb = temp_rmb;
-							  Globa_2->checkout = 3;//刷卡操作结果标志    0：未知 1：灰锁 2：补充交易 3：卡片正常 4：无法识别卡片  5：卡片状态异 6：卡片已占用 7：非充电卡
-							}
-						}else if(!((card_sn[0] == '6')&&((card_sn[1] == '8')||(card_sn[1] == '9')))){
-							if(0 == memcmp(&Globa_2->card_sn[0], "0000000000000000", sizeof(Globa_2->card_sn))){
-								memcpy(&Globa_2->tmp_card_sn[0], &card_sn[0], sizeof(Globa_2->tmp_card_sn));//先保存一下临时卡号
-								Globa_2->last_rmb = temp_rmb;
-								if(((Globa_2->last_rmb <= 50)&&(Globa_2->Charger_param.Serv_Type != 1))||(((Globa_2->last_rmb <= 50)||(Globa_2->last_rmb <= Globa_2->Charger_param.Serv_Price))&&(Globa_2->Charger_param.Serv_Type == 1))){
-								  memcpy(&Globa_2->card_sn[0], &card_sn[0], sizeof(Globa_2->card_sn));//先保存一下卡号
-									Globa_2->checkout = 8;//刷卡操作结果标志    0：未知 1：灰锁 2：补充交易 3：卡片正常 4：无法识别卡片  5：卡片状态异 6：卡片已占用 7：非充电卡
-								}else{
-									Globa_2->checkout = 12;
-									memcpy(&Globa_2->card_sn[0], &card_sn[0], sizeof(Globa_2->card_sn));//先保存一下卡号
-									if(Globa_2->User_Card_check_result == 1){
-										systime = time(NULL);         //获得系统的当前时间 
-										localtime_r(&systime, &tm_t);  //结构指针指向当前时间
-										usleep(20000);//读卡器命令帧间隔时间需大于20MS
-										Ret = IC_SPG_Start(fd, &temp_rmb, &tm_t);//开始加电
-										if(Ret == 1){//开始加电成功
-											Globa_2->checkout = 1;//刷卡操作结果标志    0：未知 1：灰锁 2：补充交易 3：卡片正常 4：无法识别卡片  5：卡片状态异 6：卡片已占用 7：非充电卡
-									  }
-									}
-								}
-							}else if(0 == memcmp(&Globa_2->card_sn[0], &card_sn[0], sizeof(Globa_2->card_sn))){
-								if(Globa_2->checkout == 12){
-									if(Globa_2->User_Card_check_result == 1){
-										systime = time(NULL);         //获得系统的当前时间 
-										localtime_r(&systime, &tm_t);  //结构指针指向当前时间
-										usleep(20000);//读卡器命令帧间隔时间需大于20MS
-										Ret = IC_SPG_Start(fd, &temp_rmb, &tm_t);//开始加电
-										if(Ret == 1){//开始加电成功
-											Globa_2->checkout = 1;//刷卡操作结果标志    0：未知 1：灰锁 2：补充交易 3：卡片正常 4：无法识别卡片  5：卡片状态异 6：卡片已占用 7：非充电卡
-										}
-									}
-								}
-							}
-						}else {
-							Globa_2->checkout = 7;//其他卡，
-						}
-					}else if(Ret == 6){//交易处理 灰锁
-						if(!((card_sn[0] == '6')&&((card_sn[1] == '8')||(card_sn[1] == '9')))){
-							if(0 == memcmp(&Globa_2->tmp_card_sn[0], &card_sn[0], sizeof(Globa_2->tmp_card_sn))){//与先保存的临时卡号一致
-								memcpy(&Globa_2->card_sn[0], &card_sn[0], sizeof(Globa_2->card_sn));//先保存一下卡号
-								Globa_2->checkout = 1;//刷卡操作结果标志    0：未知 1：灰锁 2：补充交易 3：卡片正常 4：无法识别卡片  5：卡片状态异 6：卡片已占用 7：非充电卡
-								continue;//刷卡成功，结束本次循环，从新开始
-							}
-						}
-						Globa_2->checkout = 5;//置卡片异常状态
-					}
-				}
-			}/*else if(Ret == 2){
-			  Globa_2->checkout = 0;//无卡，或寻卡不成功
-			}*/	
-		}else if((Globa_1->pay_step == 2)||(Globa_1->pay_step == 3)||(Globa_1->pay_step == 4)|| \
-			(Globa_2->pay_step == 2)||(Globa_2->pay_step == 3)||(Globa_2->pay_step == 4)){ //1通道或2通道需要刷卡
-			Ret = MT625_Card_Search(fd);//检测刷卡
-			if(Ret ==1){//寻找到卡
-			  usleep(10000);
-			  memset(&card_sn[0], '0', sizeof(card_sn));
-			  Ret = MT625_Card_number(fd, &card_sn[0]);//读取卡号
-				if((Ret == 5)||(Ret == 3)||(Ret == 4)){//5：用户卡、4：员工卡、3：管理卡
-					if(((Globa_1->pay_step == 2)||(Globa_1->pay_step == 3)||(Globa_1->pay_step == 4))&& \
-					  (0 == memcmp(&Globa_1->card_sn[0], &card_sn[0], sizeof(Globa_1->card_sn)))){//与1通道启动充电卡号一致,且需刷卡
-						
-						if(Ret == 5){
-							if(Globa_1->qiyehao_flag == 0){//企业卡号不锁卡
-								usleep(20000);
-								Ret = MT625_Card_keysign(fd);//读卡锁卡标志，判断卡处于上锁还是解锁
-								if((Globa_1->pay_step == 2)||(Globa_1->pay_step == 4)){//1通道 预约倒计时界面 或在等待刷卡扣费界面
-									usleep(20000);
-									Ret = MT625_Pay_Delete(fd, Globa_1->last_rmb, Globa_1->total_rmb);//扣费
-									if(DEBUGLOG) CARD_RUN_LogOut("卡号:%s 1号枪需要扣费情况: 余额:%d 消费:%d",&Globa_1->card_sn[0],Globa_1->last_rmb, Globa_1->total_rmb);  
-									if(Ret == 30){//扣费成功
-										usleep(20000);
-										Ret = MT625_Card_Money(fd, &temp_rmb);								
-										if(DEBUGLOG) CARD_RUN_LogOut("%s %d","1号枪需要扣费成功并重新读取的余额:",temp_rmb);  
-										if(Ret == 18){
-											int lsrmb1 = (Globa_1->last_rmb - Globa_1->total_rmb);
-												 lsrmb1 = (lsrmb1<0)?0:lsrmb1; 
-											if(temp_rmb == lsrmb1){//读取卡金额和扣费之后的金额一样
-												usleep(20000);
-												Ret = MT625_Card_Write0x55(fd);//扣费后解锁
-												if(Ret == 27){
-													usleep(20000);
-													if(MT625_Card_keysign(fd) == 12){//读卡锁卡标志，判断卡处于上锁还是解锁
-														Globa_1->checkout = 3;//解锁成功，卡正常
-														if(DEBUGLOG) CARD_RUN_LogOut("%s","1号枪解锁成功，卡正常:");  
-													}else{
-														Globa_1->checkout = 1;
-													}
-												}else{
-													Globa_1->checkout = 1;
-												}
-											}else{
-												if(DEBUGLOG) CARD_RUN_LogOut("%s 理论=%d 实际=%d","1号枪扣费之后的余额和理想扣费之后的余额不一样:",lsrmb1,temp_rmb);  
-											}
-										}										
-									}else{
-										Globa_1->checkout = 1;
-									}
-								}else if(Globa_1->pay_step == 3){//在充电界面，刷卡停止充电
-									if(Ret == 12){//卡正常
-										Globa_1->checkout = 3;
-									}else if(Ret == 11){//灰锁
-										 Globa_1->checkout = 1;
-									}
-								}
-							}else{
-							 Globa_1->checkout = 3;
-							}
-						}else if(Ret == 4){//员工卡
-						 Globa_1->checkout = 3;
-						}
-					}else if(((Globa_2->pay_step == 2)||(Globa_2->pay_step == 3)||(Globa_2->pay_step == 4))&& \
-					  (0 == memcmp(&Globa_2->card_sn[0], &card_sn[0], sizeof(Globa_2->card_sn)))){//与1通道启动充电卡号一致,且需刷卡
-						if(Ret == 5){
-							//printf("Globa_2->qiyehao_flag = %d \r\n",Globa_2->qiyehao_flag);
-							if(Globa_2->qiyehao_flag == 0){//企业卡号不锁卡
-								usleep(20000);
-								Ret = MT625_Card_keysign(fd);//读卡锁卡标志，判断卡处于上锁还是解锁
-								//printf("Globa_2->pay_step = %d \r\n",Globa_2->pay_step);
-
-								if((Globa_2->pay_step == 2)||(Globa_2->pay_step == 4)){//1通道 预约倒计时界面 或在等待刷卡扣费界面
-									/*if(Ret == 11){//表明此卡处于上锁，未结算
-										Globa_2->checkout = 1;
-										 usleep(10000);//读卡器命令帧间隔时间需大于20MS
-										 MT625_Card_Money(fd, &temp_rmb);
-										 Globa_2->last_rmb = temp_rmb;
-										if(Globa_2->total_rmb >= temp_rmb){//费用超过剩余金额，按剩余金额扣费
-											 Globa_2->total_rmb = temp_rmb;
-										}
-										 usleep(10000);
-										 Ret = MT625_Pay_Delete(fd, &temp_rmb, Globa_2->total_rmb);//扣费
-										if(Ret == 30){//扣费成功
-										 usleep(10000);
-										 Ret = MT625_Card_Write0x55(fd);//扣费后解锁
-										 if(Ret == 27)
-											Globa_2->checkout = 3;//解锁成功，卡正常		
-										}
-									}*/
-									usleep(20000);
-								//	printf("MT625_Pay_Delete= %d \r\n",Globa_2->last_rmb,Globa_2->total_rmb);
-									Ret = MT625_Pay_Delete(fd, Globa_2->last_rmb, Globa_2->total_rmb);//扣费
-									if(DEBUGLOG) CARD_RUN_LogOut("卡号:%s 2号枪需要扣费情况: 余额:%d 消费:%d",&Globa_2->card_sn[0],Globa_2->last_rmb, Globa_2->total_rmb);  
-
-									if(Ret == 30){//扣费成功
-										usleep(20000);
-										Ret = MT625_Card_Money(fd, &temp_rmb);
-										if(DEBUGLOG) CARD_RUN_LogOut("%s %d","2号枪需要扣费成功并重新读取的余额:",temp_rmb);  
-
-										if(Ret == 18){
-											int lsrmb2 = (Globa_2->last_rmb - Globa_2->total_rmb);
-												 lsrmb2 = (lsrmb2<0)?0:lsrmb2; 
-											if(temp_rmb == lsrmb2){//读取卡金额和扣费之后的金额一样
-												usleep(20000);
-												Ret = MT625_Card_Write0x55(fd);//扣费后解锁
-												if(Ret == 27){
-													usleep(20000);
-													if(MT625_Card_keysign(fd) == 12){//读卡锁卡标志，判断卡处于上锁还是解锁
-														Globa_2->checkout = 3;//解锁成功，卡正常
-														if(DEBUGLOG) CARD_RUN_LogOut("%s","2号枪解锁成功，卡正常:");  
-													}else{
-														Globa_2->checkout = 1;
-													}
-												}else{
-													Globa_2->checkout = 1;
-												}
-											}else {
-												if(DEBUGLOG) CARD_RUN_LogOut("%s 理论=%d 实际=%d","2号枪扣费之后的余额和理想扣费之后的余额不一样:",lsrmb2,temp_rmb);  
-											}
-										}	
-									}else{
-										Globa_2->checkout = 1;
-									}
-								}else if(Globa_2->pay_step == 3){//在充电界面，刷卡停止充电
-									if(Ret == 12){//卡正常
-										Globa_2->checkout = 3;
-									}else if(Ret == 11){//灰锁
-										 Globa_2->checkout = 1;
-									}
-								}
-						  }else{
-								Globa_2->checkout = 3;
-							}
-						}else if(Ret == 4){//员工卡
-						 Globa_2->checkout = 3;
-						}
-					}
-				}else if((Ret == 6)||(Ret == 7)){//CPU卡      
-				  memset(&card_sn[0], '0', sizeof(card_sn));
-				  Ret = IC_SPG_ProDeal(fd, &card_sn[0], &temp_rmb);//检测刷卡
-				  if(((Globa_1->pay_step == 2)||(Globa_1->pay_step == 3)||(Globa_1->pay_step == 4))&& \
-					  (0 == memcmp(&Globa_1->card_sn[0], &card_sn[0], sizeof(Globa_1->card_sn)))){//与1通道启动充电卡号一致,且需刷卡
-					  if((Globa_1->pay_step == 2)||(Globa_1->pay_step == 4)){//1通道 预约倒计时界面 或在等待刷卡扣费界面
-						  if(Ret == 6){//交易处理 灰锁
-						  	//Globa_1->checkout = 1;
-						  	usleep(10000);//读卡器命令帧间隔时间需大于20MS
-						  	if(Globa_1->total_rmb >= temp_rmb){//费用超过剩余金额，按剩余金额扣费
-						  		Globa_1->total_rmb = temp_rmb;
-						  	}
-							  Ret = IC_SPG_Stop(fd, Globa_1->total_rmb);
-									if(Ret == 1){//扣费成功
-										Globa_1->checkout = 3;
-									}else{
-										Globa_1->checkout = 1;
-									}
-					  	}else if(Ret == 7){//交易处理 补充交易
-							  Globa_1->checkout = 2;
-							  usleep(10000);//读卡器命令帧间隔时间需大于20MS
-						  	Ret = IC_SPG_Supp(fd);
-									if(Ret == 1){//补充交易成功
-										Globa_1->checkout = 3;
-									}else{
-										Globa_1->checkout = 1;
-									}
-								}else if(Ret == 5){//交易处理 卡片正常
-									Globa_1->checkout = 3;
-								}else{
-									Globa_1->checkout = 1;
-								}
-					  }else if(Globa_1->pay_step == 3){//在充电界面
-					  	if(Ret == 6){//交易处理 灰锁
-						    Globa_1->checkout = 1;
-					    }else if(Ret == 5){//交易处理 卡片正常
-						    Globa_1->checkout = 3;
-					    }
-				    }
-				  }else if(((Globa_2->pay_step == 2)||(Globa_2->pay_step == 3)||(Globa_2->pay_step == 4))&& \
-    		    (0 == memcmp(&Globa_2->card_sn[0], &card_sn[0], sizeof(Globa_2->card_sn)))){//与2通道启动充电卡号一致,且需刷卡
-
-				    if((Globa_2->pay_step == 2)||(Globa_2->pay_step == 4)){//2通道 预约倒计时界面 或在等待刷卡扣费界面
-    		     	if(Ret == 6){//交易处理 灰锁
-    			    	Globa_2->checkout = 1;
-
-         		    usleep(10000);//读卡器命令帧间隔时间需大于20MS
-
-								if(Globa_2->total_rmb >= temp_rmb){//费用超过剩余金额，按剩余金额扣费
-									Globa_2->total_rmb = temp_rmb;
-								}
-
-								Ret = IC_SPG_Stop(fd, Globa_2->total_rmb);
-								if(Ret == 1){//扣费成功
-									Globa_2->checkout = 3;
-								}
-							}else if(Ret == 7){//交易处理 补充交易
-								Globa_2->checkout = 2;
-
-								usleep(10000);//读卡器命令帧间隔时间需大于20MS
-
-								Ret = IC_SPG_Supp(fd);
-								if(Ret == 1){//补充交易成功
-									Globa_2->checkout = 3;
-								}
-							}else if(Ret == 5){//交易处理 卡片正常
-								Globa_2->checkout = 3;
-							} 
-						}else if(Globa_2->pay_step == 3){//2通道 在充电界面
-							if(Ret == 6){//交易处理 灰锁
-								Globa_2->checkout = 1;
-							}else if(Ret == 5){//交易处理 卡片正常
-								Globa_2->checkout = 3;
-							}
-						}
-					}
-			  }
-		  }
-	  }else if(Globa_1->pay_step == 5){ //刷管理员卡进入参数设置
-		  Ret = MT625_Card_Search(fd);//检测刷卡
-		  if(Ret == 1){//寻找到M1卡
-			  usleep(20000);
-			  memset(&card_sn[0], '0', sizeof(card_sn));
-			  Ret = MT625_Card_number(fd, &card_sn[0]);
-			  if((Ret == 3)||(Ret == 4)||(Ret == 5)){//M1卡
-					if((card_sn[0] == '6')&&(card_sn[1] == '9')){//管理卡
-					   usleep(20000);
-				
-						if(MT625_Card_Key(fd) == 21){
-						  Globa_1->checkout = 7;//刷卡操作结果标志    0：未知 1：灰锁 2：补充交易 3：卡片正常 4：无法识别卡片  5：卡片状态异 6：卡片已占用 7：非充电卡维修卡
-						}
-					}else{
-					 Globa_1->checkout = 0;//其他卡，
-					}
-				}else if((Ret == 6)||(Ret == 7)){//CPU卡
-			    memset(&card_sn[0], '0', sizeof(card_sn));
-			    Ret = IC_SPG_ProDeal(fd, &card_sn[0], &temp_rmb);
-				  if(Ret == 5){//交易处理 卡片正常
-						if((card_sn[0] == '6')&&(card_sn[1] == '9')){//管理卡
-						  Globa_1->checkout = 7;//刷卡操作结果标志    0：未知 1：灰锁 2：补充交易 3：卡片正常 4：无法识别卡片  5：卡片状态异 6：卡片已占用 7：非充电卡维修卡
-						}else{
-						 Globa_1->checkout = 0;//其他卡，
-						}
-					}else{
-				    Globa_1->checkout = 0;
-					}
-				}
-			}else if(Ret == 2){//无卡
-				Globa_1->checkout = 0;
-			}
-		}else if(Globa_1->pay_step == 6){//查询卡余额
-		  if(Globa_1->checkout == 0){//防止多次操作卡片
-				Ret = MT625_Card_Search(fd); //M1卡处理
-				//printf("查询卡余额--查询卡:Ret = %d \n",Ret);
-				if(Ret == 1){//寻卡成功
-					usleep(20000);
-					memset(&card_sn[0], '0', sizeof(card_sn));
-					Ret = MT625_Card_number(fd, &card_sn[0]);//读取卡号
-				//	printf("读取卡号:Ret = %d \n",Ret);
-					if((Ret == 5)||(Ret == 3)||(Ret == 4)){//5：用户卡、4：员工卡、3：管理卡
-						if((card_sn[0] == '6')&&(card_sn[1] == '8')){//员工卡
-							if(0 == memcmp(&Globa_1->card_sn[0], "0000000000000000", sizeof(Globa_1->card_sn))){
-								Ret = MT625_Card_Money(fd, &temp_rmb);
-								if(Ret == 18){
-									memcpy(&Globa_1->card_sn[0], &card_sn[0], sizeof(Globa_1->card_sn));//先保存一下卡号
-									Globa_1->last_rmb = temp_rmb;//读取卡金额
-									Globa_1->checkout = 3;//刷卡操作结果标志    0：未知 1：灰锁 2：补充交易 3：卡片正常 4：无法识别卡片  5：卡片状态异 6：卡片已占用 7：非充电卡
-								}
-							}
-						}else if(!((card_sn[0] == '6')&&((card_sn[1] == '8')||(card_sn[1] == '9')))){//用户卡
-							if(0 == memcmp(&Globa_1->card_sn[0], "0000000000000000", sizeof(Globa_1->card_sn))){ 
-								usleep(20000);
-								Ret = MT625_Card_Money(fd, &temp_rmb);
-								if(Ret == 18){
-										memcpy(&Globa_1->card_sn[0], &card_sn[0], sizeof(Globa_1->card_sn));//先保存一下临时卡号
-									Globa_1->last_rmb = temp_rmb;//读取卡金额
-									Globa_1->checkout = 1;//刷卡操作结果标志    0：未知 1：灰锁 2：补充交易 3：卡片正常 4：无法识别卡片  5：卡片状态异 6：卡片已占用 7：非充电卡
-								}
-							}
-						}else{
-						 Globa_1->checkout = 7;//非充电卡，可能是维修卡
-						}
-					}else if((Ret == 6)||(Ret == 7)){//CPU卡
-						memset(&card_sn[0], '0', sizeof(card_sn));
-						Ret = IC_SPG_ProDeal(fd, &card_sn[0], &temp_rmb);
-						if((Ret == 1)||(Ret == 3)){//卡片处理失败，请重新操作
-							Globa_1->checkout = 0;
-						}else if(Ret == 2){//无法识别卡片
-							Globa_1->checkout = 4;
-						}else if((Ret == 4)||(Ret == 7)){//卡状态异常
-							Globa_1->checkout = 5;
-						}else if((Ret == 5)||(Ret == 6)){//交易处理 卡片正常
-							if((card_sn[0] == '6')&&(card_sn[1] == '8')){
-								if(0 == memcmp(&Globa_1->card_sn[0], "0000000000000000", sizeof(Globa_1->card_sn))){
-									memcpy(&Globa_1->card_sn[0], &card_sn[0], sizeof(Globa_1->card_sn));//先保存一下卡号
-									Globa_1->last_rmb = temp_rmb;
-									Globa_1->checkout = 3;//刷卡操作结果标志    0：未知 1：灰锁 2：补充交易 3：卡片正常 4：无法识别卡片  5：卡片状态异 6：卡片已占用 7：非充电卡
-								}
-							}else if(!((card_sn[0] == '6')&&((card_sn[1] == '8')||(card_sn[1] == '9')))){
-								if(0 == memcmp(&Globa_1->card_sn[0], "0000000000000000", sizeof(Globa_1->card_sn))){
-									memcpy(&Globa_1->card_sn[0], &card_sn[0], sizeof(Globa_1->card_sn));//先保存一下卡号
-									Globa_1->last_rmb = temp_rmb;
-									Globa_1->checkout = 1;//刷卡操作结果标志    0：未知 1：灰锁 2：补充交易 3：卡片正常 4：无法识别卡片  5：卡片状态异 6：卡片已占用 7：非充电卡
-								}
-							}else{
-								Globa_1->checkout = 7;//非充电卡，可能是维修卡
-							}
-						}
-					}
-				}
-			}
-		}else if(Globa_1->pay_step == 7){//解锁卡
-		  switch(Globa_1->User_Card_Lock_Info.Unlock_card_setp){
-			  case 0:{// 寻卡验证是否为用户卡机卡片锁卡情况
-					Ret = MT625_Card_Search(fd); //M1卡处理
-					if(Ret == 1){//寻卡成功
-						usleep(20000);
-						memset(&card_sn[0], '0', sizeof(card_sn));
-						Ret = MT625_Card_number(fd, &card_sn[0]);//读取卡号
-						if(Ret == 5){//5：用户卡、4：员工卡、3：管理卡
-							if(0 == memcmp(&Globa_1->card_sn[0], "0000000000000000", sizeof(Globa_1->card_sn))){
-								memcpy(&Globa_1->card_sn[0], &card_sn[0], sizeof(Globa_1->card_sn));//先保存一下临时卡号
-								usleep(20000);
-								Ret = MT625_Card_keysign(fd);//读卡锁卡标志，判断卡处于上锁还是解锁
-								if(Ret == 11){//表明此卡处于上锁
-									usleep(20000);//读卡器命令帧间隔时间需大于20MS
-									Ret = MT625_Card_Money(fd, &temp_rmb);
-					        if(Ret == 18){
-										Globa_1->last_rmb = temp_rmb;
-										if(Globa_1->total_rmb >= temp_rmb){//费用超过剩余金额，按剩余金额扣费
-											Globa_1->total_rmb = temp_rmb;
-										}
-										Globa_1->checkout = 1;
-										Globa_1->User_Card_Lock_Info.Unlock_card_setp = 1;//等待解锁
-										Globa_1->User_Card_Lock_Info.User_card_unlock_Requestfalg = 1;
-									}
-								}else{
-									Globa_1->checkout = 3;	//表示无锁卡记录
-								}
-							}
-						}else if((Ret == 6)||(Ret == 7)){//CPU卡
-							memset(&card_sn[0], '0', sizeof(card_sn));
-							Ret = IC_SPG_ProDeal(fd, &card_sn[0], &temp_rmb);
-							if((Ret == 1)||(Ret == 3)){//卡片处理失败，请重新操作
-								Globa_1->checkout = 0;
-							}else if(Ret == 2){//无法识别卡片
-								Globa_1->checkout = 4;
-							}else if((Ret == 6)||(Ret == 7)){//卡状态异常
-								if(0 == memcmp(&Globa_1->card_sn[0], "0000000000000000", sizeof(Globa_1->card_sn))){
-									if(IC_SPG_MT318_Read_unlock_time(fd) != (-1)){
-										memcpy(&Globa_1->card_sn[0], &card_sn[0], sizeof(Globa_1->card_sn));//先保存一下卡号
-										Globa_1->last_rmb = temp_rmb;
-										Globa_1->checkout = 1;//刷卡操作结果标志    0：未知 1：灰锁 2：补充交易 3：卡片正常 4：无法识别卡片  5：卡片状态异
-									  Globa_1->User_Card_Lock_Info.Unlock_card_setp = 1;//等待解锁
-										Globa_1->User_Card_Lock_Info.User_card_unlock_Requestfalg = 1;
-									}
-								}
-							}else{
-								Globa_1->checkout = 3;//刷卡操作结果标志    0：未知 1：灰锁 2：补充交易 3：卡片正常 4：无法识别卡片  5：卡片状态异 6：卡片已占用 7：非充电卡 8:卡号不一样
-							}
-						}else if((Ret == 3)||(Ret == 4)){//其他卡片都正确
-							Globa_1->checkout = 3;	//表示无锁卡记录
-						}else{//其他卡片都正确
-							Globa_1->checkout = 4;	//表示无锁卡记录
-						}
-					}
-					break;
-		 	  }
-				case 1:{//确卡号之后进行解锁 
-					if(Globa_1->User_Card_Lock_Info.Start_Unlock_flag == 1){
-						Ret = MT625_Card_Search(fd); //M1卡处理
-					  if(Ret == 1){//寻卡成功
-							usleep(20000);
-							memset(&card_sn[0], '0', sizeof(card_sn));
-							Ret = MT625_Card_number(fd, &card_sn[0]);//读取卡号
-							if(Ret == 5){//5：用户卡、4：员工卡、3：管理卡
-								if(0 == memcmp(&Globa_1->card_sn[0], &card_sn[0], sizeof(Globa_1->card_sn))){//与1通道启动充电卡号一致,
-									if(Globa_1->User_Card_Lock_Info.Deduct_money >= Globa_1->last_rmb){//费用超过剩余金额，按剩余金额扣费
-										Globa_1->User_Card_Lock_Info.Deduct_money = Globa_1->last_rmb;
-									}
-									usleep(20000);
-									Ret = MT625_Pay_Delete(fd, Globa_1->last_rmb, Globa_1->User_Card_Lock_Info.Deduct_money);//扣费
-									if(Ret == 30){//扣费成功
-										usleep(20000);
-										Ret = MT625_Card_Money(fd, &temp_rmb);
-					          if(Ret == 18){
-									     int lsrmb3 = (Globa_1->last_rmb - Globa_1->User_Card_Lock_Info.Deduct_money);
-									     lsrmb3 = (lsrmb3<0)?0:lsrmb3; 
-								      if(temp_rmb == lsrmb3){//读取卡金额和扣费之后的金额一样
-												usleep(20000);
-												if(MT625_Card_Write0x55(fd) == 27){//扣费后解锁
-												  usleep(20000);
-													if(MT625_Card_keysign(fd) == 12){//读卡锁卡标志，判断卡处于上锁还是解锁
-														Globa_1->checkout = 3;//解锁成功，卡正常		
-														Globa_1->User_Card_Lock_Info.Start_Unlock_flag = 0;
-														Globa_1->User_Card_Lock_Info.User_card_unlock_Data_Requestfalg = 1;//上传清单
-													}
-												}
-									    }
-										}
-									}
-								}else{//卡号不一样时的处理
-									Globa_1->checkout = 8;
-								}
-							}else if((Ret == 6)||(Ret == 7)){//CPU卡
-								memset(&card_sn[0], '0', sizeof(card_sn));
-								Ret = IC_SPG_ProDeal(fd, &card_sn[0], &temp_rmb);
-								if(0 == memcmp(&Globa_1->card_sn[0], &card_sn[0], sizeof(Globa_1->card_sn))){//与1通道启动充电卡号一致,
-									usleep(20000);
-									if((Ret == 6)||(Ret == 7)){//卡状态异常
-										if(Globa_1->User_Card_Lock_Info.Deduct_money >= temp_rmb){//费用超过剩余金额，按剩余金额扣费
-											Globa_1->User_Card_Lock_Info.Deduct_money = temp_rmb;
-										}
-										Ret = IC_SPG_Stop(fd, Globa_1->User_Card_Lock_Info.Deduct_money);
-										if(Ret == 1){//扣费成功
-										  usleep(20000);
-											Globa_1->checkout = 3;
-											Globa_1->User_Card_Lock_Info.Start_Unlock_flag = 0;
-											Globa_1->User_Card_Lock_Info.User_card_unlock_Data_Requestfalg = 1;//上传清单
-										}
-									}
-								}else{//卡号不一样时的处理
-									Globa_1->checkout = 8;
-								}
-							}
-						}
-					}
-					break;
-				}
-				default:{
-					break;
-				}
-			}
-		}else{//系统空闲
-			usleep(500000);
-		  MT625_Card_Search(fd); //寻卡
+		if((Find_DZ_Step != old_Find_DZ_Step)||(card_pwr_on_st != old_card_pwr_on_st)||(card_pwr_Off_st != old_card_pwr_Off_st)){
+			old_Find_DZ_Step = Find_DZ_Step;
+			old_card_pwr_Off_st = card_pwr_Off_st;
+			old_card_pwr_on_st = card_pwr_on_st;
+			printf(" xxxxxxxxxxxxx Find_DZ_Step = %0x card_pwr_on_st = %0x-- card_pwr_Off_st = %0x---\n",old_Find_DZ_Step,old_card_pwr_on_st,old_card_pwr_Off_st);
 		}
-		if(IC_com_Find_flag == 1){//表示刷卡器没有数据返回
-			IC_com_count ++;
-			if(IC_com_count> 20){
-				if(Globa_1->Error.IC_connect_lost == 0){
-					Globa_1->Error.IC_connect_lost = 1;
-					sent_warning_message(0x99, 55, 0, 0);
-				}
-			}
-		}else{
-			IC_com_count = 0;
-			if(Globa_1->Error.IC_connect_lost == 1){
-				Globa_1->Error.IC_connect_lost = 0;
-				sent_warning_message(0x98, 55, 0, 0);
-			}
-		}
+		Find_DZ_Card(fd);
+		Card_Power_On_Card(fd);
+		Card_Power_Off_Card(fd);
   }
 }  
 
 
-extern void IC_Thread(void)
+extern void IC_Thread(void* para)
 {
 	pthread_t td1;
 	int ret ,stacksize = 1024*1024;
@@ -2140,7 +1642,7 @@ extern void IC_Thread(void)
 		return;
 	
 	/* 创建自动串口抄收线程 */
-	if(0 != pthread_create(&td1, &attr, (void *)IC_Task, NULL)){
+	if(0 != pthread_create(&td1, &attr, (void *)IC_Task, para)){
 		perror("####pthread_create IC_Read_Write_Task ERROR ####\n\n");
 	}
 	ret = pthread_attr_destroy(&attr);

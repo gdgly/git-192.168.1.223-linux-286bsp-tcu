@@ -20,15 +20,16 @@
 #include <string.h>
 #include <pthread.h>
 #include <asm/ioctls.h>
-
+#include <sys/prctl.h>
 
 #include "globalvar.h"
 
 #define METER_645_DEBUG 0        //ISO8583_DEBUG 调试使能
 
 extern UINT32 Meter_Read_Write_Watchdog;
-extern UINT32 Dc_shunt_Set_meter_flag_1;
-extern UINT32 Dc_shunt_Set_meter_flag_2;
+extern UINT32 Dc_shunt_Set_meter_flag[CONTROL_DC_NUMBER];
+
+static UINT32 Dc_shunt_Set_meter_done_flag[CONTROL_DC_NUMBER];
 
 //----645-1997读数据格式------------
 typedef enum Dlt645Read_1997{
@@ -101,7 +102,7 @@ static unsigned char Meter_645_cs(unsigned char *p, int L)
 }
 
 //读电量
-static int kwh_read(UINT32 *meter_now_KWH, int fd, unsigned char *addr)
+static int kwh_read(UINT32 *meter_now_KWH, int fd, unsigned char *addr,int gun_id,int DIR_Ctl_io)
 {
 	int i=0,j=0,start_flag=0;
 	int Count,status;
@@ -129,14 +130,14 @@ static int kwh_read(UINT32 *meter_now_KWH, int fd, unsigned char *addr)
 	SentBuf[16] = Meter_645_cs(&SentBuf[4],12);	
 	SentBuf[17] = 0x16;	
 
-	Led_Relay_Control(6, 0);
+	Led_Relay_Control(DIR_Ctl_io, COM_RS485_TX_LEVEL);
 	write(fd, SentBuf, 18+1);
 	do{
 		ioctl(fd, TIOCSERGETLSR, &status);
 	} while (status!=TIOCSER_TEMT);
-	Led_Relay_Control(6, 1);
-
-	Count = read_datas_tty(fd, recvBuf, MAX_MODBUS_FRAMESIZE, 500000, 30000);
+	Led_Relay_Control(DIR_Ctl_io, COM_RS485_RX_LEVEL);
+	Globa->dc_meter_tx_cnt[gun_id]++;
+	Count = read_datas_tty(fd, recvBuf, MAX_MODBUS_FRAMESIZE, 1000000, 300000);
   if(Count >= 18){//响应可能没有0xfe引导码
 
 #if METER_645_DEBUG == 1
@@ -172,7 +173,7 @@ static int kwh_read(UINT32 *meter_now_KWH, int fd, unsigned char *addr)
 					                 bcd_to_int_1byte(recvBuf[start_flag+12]));
 
 //			printf("meter_now_KWH xxxxxxxxxxxxxxxxxxxxxx= %d \n", *meter_now_KWH);
-
+					Globa->dc_meter_rx_ok_cnt[gun_id]++;
 					return (0);//抄收数据正确
 				}
 			}
@@ -183,7 +184,7 @@ static int kwh_read(UINT32 *meter_now_KWH, int fd, unsigned char *addr)
 }
 
 //读电压
-static int volt_read(UINT32 *Output_voltage, int fd, unsigned char *addr)
+static int volt_read(UINT32 *Output_voltage, int fd, unsigned char *addr,int DIR_Ctl_io)
 {
 	int i=0,start_flag=0;
 	int Count,status;
@@ -211,14 +212,14 @@ static int volt_read(UINT32 *Output_voltage, int fd, unsigned char *addr)
 	SentBuf[16] = Meter_645_cs(&SentBuf[4],12);	
 	SentBuf[17] = 0x16;	
 
-	Led_Relay_Control(6, 0);
+	Led_Relay_Control(DIR_Ctl_io, COM_RS485_TX_LEVEL);
 	write(fd, SentBuf, 18+1);
 	do{
 		ioctl(fd, TIOCSERGETLSR, &status);
 	} while (status!=TIOCSER_TEMT);
-	Led_Relay_Control(6, 1);
+	Led_Relay_Control(DIR_Ctl_io, COM_RS485_RX_LEVEL);
 
-	Count = read_datas_tty(fd, recvBuf, MAX_MODBUS_FRAMESIZE, 500000, 30000);
+	Count = read_datas_tty(fd, recvBuf, MAX_MODBUS_FRAMESIZE, 1000000, 300000);
   if(Count >= 17){//响应可能没有0xfe引导码
   	for(i=0;i<5;i++){
   		if(recvBuf[i] == 0x68){
@@ -254,7 +255,7 @@ static int volt_read(UINT32 *Output_voltage, int fd, unsigned char *addr)
 }
 
 //读电流
-static int curt_read(UINT32 *Output_current, int fd, unsigned char *addr)
+static int curt_read(UINT32 *Output_current, int fd, unsigned char *addr,int DIR_Ctl_io)
 {
 	int i=0,start_flag=0;
 	int Count,status;
@@ -283,14 +284,14 @@ static int curt_read(UINT32 *Output_current, int fd, unsigned char *addr)
 	SentBuf[17] = 0x16;	
 
 
-	Led_Relay_Control(6, 0);
+	Led_Relay_Control(DIR_Ctl_io, COM_RS485_TX_LEVEL);
 	write(fd, SentBuf, 18+1);
 	do{
 		ioctl(fd, TIOCSERGETLSR, &status);
 	} while (status!=TIOCSER_TEMT);
-	Led_Relay_Control(6, 1);
+	Led_Relay_Control(DIR_Ctl_io, COM_RS485_RX_LEVEL);
 
-	Count = read_datas_tty(fd, recvBuf, MAX_MODBUS_FRAMESIZE, 500000, 30000);
+	Count = read_datas_tty(fd, recvBuf, MAX_MODBUS_FRAMESIZE, 1000000, 300000);
   if(Count >= 18){//响应可能没有0xfe引导码
   	for(i=0;i<5;i++){
   		if(recvBuf[i] == 0x68){
@@ -326,8 +327,9 @@ static int curt_read(UINT32 *Output_current, int fd, unsigned char *addr)
 	return (-1);
 }
 
+
 //下发充直流分流器参数Dc_shunt_Set_meter_flag
-static int Dc_shunt_Set_meter(UINT32 DC_Shunt_Range, int fd, unsigned char *addr, int gun)
+static int Dc_shunt_Set_meter(UINT32 DC_Shunt_Range, int fd, unsigned char *addr, int gun,int DIR_Ctl_io)
 {
 	int i=0,start_flag=0;
 	int Count,status;
@@ -365,37 +367,35 @@ static int Dc_shunt_Set_meter(UINT32 DC_Shunt_Range, int fd, unsigned char *addr
 
 	SentBuf[24] = Meter_645_cs(&SentBuf[4],20);	
 	SentBuf[25] = 0x16;	
-	Led_Relay_Control(6, 0);
+	Led_Relay_Control(DIR_Ctl_io, COM_RS485_TX_LEVEL);
 	write(fd, SentBuf, 26+1);
 	do{
 		ioctl(fd, TIOCSERGETLSR, &status);
 	} while (status!=TIOCSER_TEMT);
-	Led_Relay_Control(6, 1);
+	Led_Relay_Control(DIR_Ctl_io, COM_RS485_RX_LEVEL);
 
-	Count = read_datas_tty(fd, recvBuf, MAX_MODBUS_FRAMESIZE, 500000, 30000);
-  if(Count >= 16){//响应可能没有0xfe引导码
-  	for(i=0;i<5;i++){
-  		if(recvBuf[i] == 0x68){
-  			start_flag = i;
-  			break;
-  		}
-  	}
+	Count = read_datas_tty(fd, recvBuf, MAX_MODBUS_FRAMESIZE, 1000000, 300000);
+	//if(Count >= 16)
+	{//响应可能没有0xfe引导码
+		for(i=0;i<5;i++){
+			if(recvBuf[i] == 0x68){
+				start_flag = i;
+				break;
+			}
+		}
 
-  	if(i > 4){
-  		return (-1);
-  	}
+		if(i > 4){
+			return (-1);
+		}
 
-  	if((Count-start_flag) != 16){
-  		return (-1);
-  	}
+		// if((Count-start_flag) != 16){
+			// return (-1);
+		// }
 
 		if((Meter_645_cs(&recvBuf[start_flag], Count-start_flag-2)) == recvBuf[Count-2]){
-			if((recvBuf[start_flag] == 0x68)&&(recvBuf[Count-1] == 0x16)){//起始符，结束符正确
-	      if(gun == 1){
-					Dc_shunt_Set_meter_flag_1 = 0;
-				}else{
-					Dc_shunt_Set_meter_flag_2 = 0;
-				}
+			if((recvBuf[start_flag] == 0x68)&&(recvBuf[Count-1] == 0x16))
+			{//起始符，结束符正确				
+				Dc_shunt_Set_meter_done_flag[gun-1] = 1;
 			}
 		}
 	}
@@ -409,171 +409,124 @@ static int Dc_shunt_Set_meter(UINT32 DC_Shunt_Range, int fd, unsigned char *addr
 ***parameter  :none
 ***return		  :none
 **********************************************************/
-static void Meter_Read_Write_Task(void)
+static void Meter_Read_Write_Task(void* para)
 {
 	int fd, Ret = 0;
-
-  UINT32 meter_connect1 = 0;
-  UINT32 meter_connect_count1 = 0;
-
-  UINT32 meter_connect2 = 0;
-  UINT32 meter_connect_count2 = 0;
-
+	int DIR_Ctl_io = COM3_DIR_IO;//IO换向
+	int i=0,j;
+	UINT32 meter_connect[CONTROL_DC_NUMBER];
+	UINT32 meter_connect_count[CONTROL_DC_NUMBER];
+	UINT32 s_count[CONTROL_DC_NUMBER];//test
 	UINT32 Output_voltage = 0;				//充电机输出电压 0.001V
 	UINT32 Output_current = 0;				//充电机输出电流 0.001A
-	UINT32 meter_now_KWH = 0;					//充电机输出电流 0.01kwh
-  UINT32 meter_Current_A = 0,meter_Current_V = 0;
-	fd = OpenDev(METER_COM_ID);
-	if(fd == -1) {
+	UINT32 meter_now_KWH = 0;				//电表电能 0.01kwh
+	
+	UINT32 gun_config = CONTROL_DC_NUMBER;
+	unsigned char Power_meter_addr[CONTROL_DC_NUMBER][12];
+	
+	Com_run_para  com_thread_para = *((Com_run_para*)para);
+	if( SYS_COM3 == com_thread_para.com_id)
+		DIR_Ctl_io = COM3_DIR_IO;	
+	if( SYS_COM4 == com_thread_para.com_id)
+		DIR_Ctl_io = COM4_DIR_IO;	
+	if( SYS_COM5 == com_thread_para.com_id)
+		DIR_Ctl_io = COM5_DIR_IO;	
+	if( SYS_COM6 == com_thread_para.com_id)
+		DIR_Ctl_io = COM6_DIR_IO;	
+	
+	fd = OpenDev(com_thread_para.com_dev_name);
+	if(fd == -1) 
+	{
 		while(1);
-	}else{
-		set_speed(fd, 9600);
-		set_Parity(fd, 8, 1, 2);//偶校验
+	}else
+	{
+		set_speed(fd, com_thread_para.com_baud);
+		//set_Parity(fd, 8, 1, 2);//偶校验
+		set_Parity(fd, com_thread_para.com_data_bits, com_thread_para.com_stop_bits, com_thread_para.even_odd);//偶校验
 		close(fd);
-  }
-	fd = OpenDev(METER_COM_ID);
+	}
+	fd = OpenDev(com_thread_para.com_dev_name);	
 	if(fd == -1) {
 		while(1);
 	}
-	prctl(PR_SET_NAME,(unsigned long)"DC_meter1997_Task");//设置线程名字 
-
-	while(1){
-		usleep(150000);//100ms    500K 7-8秒一度电
+	prctl(PR_SET_NAME,(unsigned long)"DCM_97_Task");//设置线程名字
+	for(i=0;i<CONTROL_DC_NUMBER;i++)
+	{
+		meter_connect[i] = 0;
+		meter_connect_count[i] = 0;
+		s_count[i] = 0;
+	}
+	
+	while(1)
+	{
+		usleep(100000);//100ms    500K 7-8秒一度电
 		Meter_Read_Write_Watchdog = 1;
 
-		meter_connect1 = 0;
-		meter_connect2 = 0;
-    
-	  if(Globa_1->Charger_param.System_Type != 3){//不是壁挂的
-			//--------------------------- 1号电表 ------------------------------------
-  		Ret = kwh_read(&meter_now_KWH, fd, &Globa_1->Charger_param.Power_meter_addr1[0]);//读电量
-  		if(Ret == -1){
+		gun_config = Globa->Charger_param.gun_config;
+		if(gun_config > CONTROL_DC_NUMBER)
+			gun_config = CONTROL_DC_NUMBER;
+		
+		for(i=0;i<gun_config;i++)
+			memcpy(Power_meter_addr[i],Globa->Charger_param.Power_meter_addr[i],12);
 
-  		}else if(Ret == 0){
-      	meter_connect1 = 1;
-				Globa_1->meter_KWH = meter_now_KWH;
-				if(Globa_1->Charger_param.System_Type == 1){//双枪同时充电的时候才需要
-			    Globa_2->meter_KWH = meter_now_KWH;
-				}
-  		}
-
-			usleep(100000);//100ms
-	
-  		Ret = curt_read(&meter_Current_A, fd, &Globa_1->Charger_param.Power_meter_addr1[0]);//读电流
-			if(Ret == -1){
-			}else if(Ret == 0){
-				meter_connect1 = 1;
-				Globa_1->meter_Current_A = meter_Current_A;
-				if(Globa_1->Charger_param.System_Type == 1){//双枪同时充电的时候才需要
-			    Globa_2->meter_Current_A = meter_Current_A;
-				}
+		for(i=0;i<gun_config;i++)
+		{
+			Ret = kwh_read(&meter_now_KWH, fd, Power_meter_addr[i],i,DIR_Ctl_io);//读电量
+			if(Ret == -1)
+			{
+			}else if(Ret == 0)
+			{
+				meter_connect[i] = 1;
+				Globa->Control_DC_Infor_Data[i].meter_KWH = meter_now_KWH*METER_READ_MULTIPLE;// + s_count[i]*500;//test每次加1度
+				Globa->Control_DC_Infor_Data[i].meter_KWH_update_flag = 1;
+				s_count[i]++;//test
+				//printf("Globa[%d]->meter_KWH = %d.%d kwh\n",i,meter_now_KWH/100,meter_now_KWH%100);
 			}
-			
-			/*Ret = volt_read(&meter_Current_V, fd, &Globa_1->Charger_param.Power_meter_addr1[0]);//读电流
-			if(Ret == -1){
-			}else if(Ret == 0){
-				meter_connect1 = 1;
-				Globa_1->meter_Current_V = meter_Current_V;
-				if(Globa_1->Charger_param.System_Type == 1){//双枪同时充电的时候才需要
-			    Globa_2->meter_Current_V = meter_Current_V;
-				}
-			}
-			*/
-			if(Dc_shunt_Set_meter_flag_1 == 1){ //下发电表分流器量程
-			  Dc_shunt_Set_meter(Globa_1->Charger_param.DC_Shunt_Range, fd, &Globa_1->Charger_param.Power_meter_addr1[0], 1);
-				usleep(150000);//100ms
-				if((Globa_1->Charger_param.System_Type == 0 )||(Globa_1->Charger_param.System_Type == 4 )){//同时充电
-				  Dc_shunt_Set_meter(Globa_2->Charger_param.DC_Shunt_Range, fd, &Globa_2->Charger_param.Power_meter_addr2[0], 2);
-				}
-			}
-
-  		if(meter_connect1 == 0){
-  			meter_connect_count1++;
-  			if(meter_connect_count1 >= 15){
-  				meter_connect_count1 = 0;
-  				if(Globa_1->Error.meter_connect_lost == 0){
-  					Globa_1->Error.meter_connect_lost = 1;
-  					
-						if((Globa_1->Charger_param.System_Type == 0 )||(Globa_1->Charger_param.System_Type == 4 )){
-							sent_warning_message(0x99, 54, 1, 0);
-						}else{
-							sent_warning_message(0x99, 54, 0, 0);
-						}
-						
-  					Globa_1->Error_system++;
-						if(Globa_1->Charger_param.System_Type == 1){//单枪或者轮流充电
-							Globa_2->Error_system++;
-						}
-  				}
-  			}
-  		}else{
-  			meter_connect_count1 = 0;
-  			if(Globa_1->Error.meter_connect_lost == 1){
-  				Globa_1->Error.meter_connect_lost = 0;
-  			
-					if((Globa_1->Charger_param.System_Type == 0 )||(Globa_1->Charger_param.System_Type == 4 )){
-						sent_warning_message(0x98, 54, 1, 0);
-					}else{
-						sent_warning_message(0x98, 54, 0, 0);
-					}
-  				Globa_1->Error_system--;
-					if(Globa_1->Charger_param.System_Type == 1){//单枪或者轮流充电
-						Globa_2->Error_system--;
-					}
-  			}
-  		}
-			if((Globa_1->Charger_param.System_Type == 0)||(Globa_1->Charger_param.System_Type == 4)){//双枪同时充电的时候才需要
-			//--------------------------- 2号电表 ------------------------------------
-  		Ret = kwh_read(&meter_now_KWH, fd, &Globa_2->Charger_param.Power_meter_addr2[0]);//读电量
-  		if(Ret == -1){
-
-  		}else if(Ret == 0){
-      	meter_connect2 = 1;
-				Globa_2->meter_KWH = meter_now_KWH;
-  		}
-
-			usleep(100000);//100ms
-       Ret = curt_read(&meter_Current_A, fd, &Globa_2->Charger_param.Power_meter_addr2[0]);//读电流
-			if(Ret == -1){
-			}else if(Ret == 0){
-				meter_connect2 = 1;
-				Globa_2->meter_Current_A = meter_Current_A;
-			}
-		/*	Ret = volt_read(&meter_Current_V, fd, &Globa_2->Charger_param.Power_meter_addr2[0]);//读电流
-			if(Ret == -1){
-			}else if(Ret == 0){
-				meter_connect2 = 1;
-				Globa_2->meter_Current_V = meter_Current_V;
-			}*/
-			
-			if(Dc_shunt_Set_meter_flag_2 == 1){ //下发电表分流器量程
-			  Dc_shunt_Set_meter(Globa_1->Charger_param.DC_Shunt_Range, fd, &Globa_1->Charger_param.Power_meter_addr1[0], 1);
-			 	usleep(150000);//100ms
-			  Dc_shunt_Set_meter(Globa_2->Charger_param.DC_Shunt_Range, fd, &Globa_2->Charger_param.Power_meter_addr2[0], 2);
-			}
-
-  		if(meter_connect2 == 0){
-  			meter_connect_count2++;
-  			if(meter_connect_count2 >= 15){
-  				meter_connect_count2 = 0;
-  				if(Globa_2->Error.meter_connect_lost == 0){
-  					Globa_2->Error.meter_connect_lost = 1;
-  					sent_warning_message(0x99, 54, 2, 0);
-  					Globa_2->Error_system++;
-  				}
-  			} 
-  		}else{
-  			meter_connect_count2 = 0;
-  			if(Globa_2->Error.meter_connect_lost == 1){
-  				Globa_2->Error.meter_connect_lost = 0;
-  				sent_warning_message(0x98, 54, 2, 0);
-  				Globa_2->Error_system--;
-  			}
-  		}
-  	  }
-	  }else{
-			sleep(5);
+			usleep(200000);//200ms
 		}
+		
+		for(i=0;i<gun_config;i++)
+		{
+			if(Dc_shunt_Set_meter_flag[i] == 1)//下发电表分流器量程
+			{
+				Dc_shunt_Set_meter_done_flag[i] = 0;//clear
+				Dc_shunt_Set_meter(Globa->Charger_param.DC_Shunt_Range[i], fd, Power_meter_addr[i],i+1,DIR_Ctl_io);
+				usleep(200000);//200ms
+				if(Dc_shunt_Set_meter_done_flag[i])//下发成功
+					Dc_shunt_Set_meter_flag[i] = 0;//clear
+			}
+		}
+		
+		
+		for(i=0;i<gun_config;i++)
+		{
+			if(meter_connect[i] == 0)
+			{
+				meter_connect_count[i]++;
+				if(meter_connect_count[i] >= 10)
+				{
+					meter_connect_count[i] = 0;
+					if(Globa->Control_DC_Infor_Data[i].Error.meter_connect_lost == 0)
+					{
+						Globa->Control_DC_Infor_Data[i].Error.meter_connect_lost = 1;							
+						sent_warning_message(0x99, 54, i+1, 0);//i+1为枪号						
+						Globa->Control_DC_Infor_Data[i].Error_system++;
+					}
+				}
+			}
+			else//ok
+			{
+				meter_connect_count[i] = 0;
+				if(Globa->Control_DC_Infor_Data[i].Error.meter_connect_lost == 1)
+				{
+					Globa->Control_DC_Infor_Data[i].Error.meter_connect_lost = 0;
+					sent_warning_message(0x98, 54, i+1, 0);	//i+1为枪号					
+					Globa->Control_DC_Infor_Data[i].Error_system--;						
+				}
+			}
+		}
+	  
+			
 	}
 }
 
@@ -582,7 +535,7 @@ static void Meter_Read_Write_Task(void)
 ***parameter  :none
 ***return		  :none
 **********************************************************/
-extern void Meter_Read_Write_Thread(void)
+extern void Meter_Read_Write_Thread(void* para)
 {
 	pthread_t td1;
 	int ret ,stacksize = 1024*1024;
@@ -597,7 +550,7 @@ extern void Meter_Read_Write_Thread(void)
 		return;
 	
 	/* 创建自动串口抄收线程 */
-	if(0 != pthread_create(&td1, &attr, (void *)Meter_Read_Write_Task, NULL)){
+	if(0 != pthread_create(&td1, &attr, (void *)Meter_Read_Write_Task, para)){
 		perror("####pthread_create IC_Read_Write_Task ERROR ####\n\n");
 	}
 

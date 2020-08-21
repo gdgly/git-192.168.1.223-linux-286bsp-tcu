@@ -36,9 +36,10 @@
 
 #include "globalvar.h"
 #include "file.h"
-#include "../lock/Carlock_task.h"
+
 
 pthread_mutex_t *globa_pmutex;
+extern pthread_mutex_t gLogMutex;
 ///////////////////////////////////////////////////////
 //程序代码、函数功能说明、参数说明、及返回值
 ///////////////////////////////////////////////////////
@@ -65,22 +66,8 @@ void	share_memory(void)
 		exit(2);
 	}
 
-	Globa_1 = (GLOBAVAL *)ch_sysCfg;
-	bzero(Globa_1, sizeof(GLOBAVAL));
-
-	/*globavar2共享内存申请share memory*/ 
-	if((shmid_sysCfg = shmget(IPC_PRIVATE,sizeof(GLOBAVAL ),IPC_CREAT|0666))<0){
-		printf("###share memory ERROR 1###\n\n");
-		exit(1);
-	}
-	if((( ch_sysCfg =(char*)shmat(shmid_sysCfg,NULL,0)))==(char *)-1)
-	{
-		printf("###share memory ERROR 2###\n\n");
-		exit(2);
-	}
-
-	Globa_2 = (GLOBAVAL *)ch_sysCfg;
-	bzero(Globa_2, sizeof(GLOBAVAL));
+	Globa = (GLOBAVAL *)ch_sysCfg;
+	bzero(Globa, sizeof(GLOBAVAL));
 
 	/*全局进程看门狗变量 共享内存*/ 
 	if((shmid_sysCfg = shmget(IPC_PRIVATE,sizeof(UINT32),IPC_CREAT|0666))<0){
@@ -110,8 +97,6 @@ void	share_memory(void)
 
 }
 
-
-
 /*********************************************************
 **description：系统参数初始化函数
 ***parameter  :none
@@ -119,70 +104,111 @@ void	share_memory(void)
 **********************************************************/
 void	System_Param_reset(void)
 {
-	Globa_1->Charger_param.charge_modluetype = 0;
-
-	Globa_1->Charger_param.Charge_rate_voltage = 750*1000;		  //充电机额定电压  0.001V
-	Globa_1->Charger_param.Charge_rate_number1 = 2;		          //模块数量1
-	Globa_1->Charger_param.Charge_rate_number2 = 2;		          //模块数量2
-	Globa_1->Charger_param.model_rate_current = 20*1000;	      //单模块额定电流  0.001A
-	Globa_1->Charger_param.Charge_rate_current1 = Globa_1->Charger_param.Charge_rate_number1*Globa_1->Charger_param.model_rate_current;		  //充电机1额定电流  0.001A
-	Globa_1->Charger_param.Charge_rate_current2 = Globa_1->Charger_param.Charge_rate_number2*Globa_1->Charger_param.model_rate_current;		  //充电机2额定电流  0.001A
-	Globa_1->Charger_param.set_voltage = Globa_1->Charger_param.Charge_rate_voltage*4/5;
-	Globa_1->Charger_param.set_current = Globa_1->Charger_param.Charge_rate_current1*1/2;
-  Globa_1->Charger_param.System_Type = 0; //系统类型---0--双枪同时充 ---1双枪轮流充电 2--单枪立式 3-壁挂式
-
-	Globa_1->Charger_param.gun_config  = 3; 
-	Globa_1->Charger_param.Input_Relay_Ctl_Type = 0; 
-	memcpy(&Globa_1->Charger_param.SN[0], "000000000001", sizeof(Globa_1->Charger_param.SN));//充电终端序列号    41	N	n12
-
-	Globa_1->Charger_param.couple_flag = 1;		          //充电机单、并机标示 1：单机 2：并机
-	Globa_1->Charger_param.charge_addr = 1;		          //充电机地址偏移，组要是在并机模式时用，1、N
-
-	Globa_1->Charger_param.limit_power = 9999;         //出功率限制点(离线时用的默认功率限制值)  9999kw
-	Globa_1->Charger_param.meter_config_flag = 1;      //电能表配置标志  1：有，0：无
-  Globa_1->Charger_param.AC_Meter_config = 0;
-	Globa_1->Charger_param.AC_Meter_CT = 80;
-	Globa_1->Charger_param.input_over_limit = 445*1000;		    //输入过压点  0.001V 380*1.17 445
-	Globa_1->Charger_param.input_lown_limit = 300*1000;		    //输入欠压点  0.001V 380*0.79 300
-	Globa_1->Charger_param.output_over_limit = Globa_1->Charger_param.Charge_rate_voltage + 5*1000;	 //输出过压点  0.001V
-	Globa_1->Charger_param.output_lown_limit =  199*1000;		  //输出欠压点  0.001V
-	Globa_1->Charger_param.current_limit = 250;
-	Globa_1->Charger_param.BMS_work = 1;		                  //系统工作模式  1：正常，2：测试
-	Globa_1->Charger_param.BMS_CAN_ver = 1;		               //BMS的协议版本 1：国家标准 2：普天标准-深圳版本
-	Globa_1->Charger_param.APP_enable = 1;
+	int i=0;
+	Globa->Charger_param.charge_modlue_factory = HUAWEI_MODULE;//充电模块厂家
+	Globa->Charger_param.charge_modlue_index = GR95021;
 	
- 
-	Globa_1->Charger_param.Price = 100;                //单价,精确到分 1元
-	Globa_1->Charger_param.Serv_Type = 3;              //服务费收费类型 1：按次收费；2：按时间收费(单位：分/10分钟；3：按电量
-	Globa_1->Charger_param.Serv_Price = 50;            //服务费,精确到分 默认安电量收
-	Globa_1->Charger_param.DC_Shunt_Range = 300;       //直流分流器量程设置MA
-	memcpy(&Globa_1->Charger_param.Power_meter_addr1[0], "165254100522", sizeof(Globa_1->Charger_param.Power_meter_addr1));//电能表地址1 6字节
-	memcpy(&Globa_1->Charger_param.Power_meter_addr2[0], "163001407696", sizeof(Globa_1->Charger_param.Power_meter_addr2));//电能表地址2 6字节
-  Globa_1->Charger_param.Key[0] = 0xFF;
-  Globa_1->Charger_param.Key[1] = 0xFF;
-  Globa_1->Charger_param.Key[2] = 0xFF;
-  Globa_1->Charger_param.Key[3] = 0xFF;
-  Globa_1->Charger_param.Key[4] = 0xFF;
-  Globa_1->Charger_param.Key[5] = 0xFF;
-	Globa_1->Charger_param.Model_Type = 0;
-	Globa_1->Charger_param.Charging_gun_type = 0;
-	Globa_1->Charger_param.gun_allowed_temp = 95;
-	Globa_1->Charger_param.Serial_Network  = 0;//后台协议走的是DTU还是网络 1--DTU 0--网络
-  Globa_1->Charger_param.DTU_Baudrate = 2;
-	Globa_1->Charger_param.NEW_VOICE_Flag = 1;
-  Globa_1->Charger_param.Control_board_Baud_rate = 0;
-	Globa_1->Charger_param.LED_Type_Config = 0;
-	Globa_1->Charger_param.Light_Control_Data.Start_time_on_hour = 0;
-	Globa_1->Charger_param.Light_Control_Data.Start_time_on_min  = 0;
-	Globa_1->Charger_param.Light_Control_Data.End_time_off_hour  = 0;
-	Globa_1->Charger_param.Light_Control_Data.End_time_off_min   = 0;
+
+	Globa->Charger_param.Charge_rate_voltage = 950*1000;		  //充电机额定电压  0.001V
+
+	Globa->Charger_param.Charge_rate_number[0] = 2;		          //模块数量1
+	Globa->Charger_param.Charge_rate_number[1] = 2;		          //模块数量2
+	Globa->Charger_param.Charge_rate_number[2] = 2;		          //模块数量3
+	Globa->Charger_param.Charge_rate_number[3] = 2;		          //模块数量4
+	Globa->Charger_param.Charge_rate_number[4] = 2;		          //模块数量5
 	
-	Globa_1->Charger_param.heartbeat_idle_period = 30;     //空闲心跳周期 秒
-	Globa_1->Charger_param.heartbeat_busy_period = 5;     //充电心跳周期 秒
-	Globa_1->Charger_param.charge_modlue_index = 0;
-	Globa_1->Charger_param.SOC_limit = 100;	//SOC达到多少时，判断电流低于min_current后停止充电,值95表示95%
-	Globa_1->Charger_param.min_current = 15;//单位A  值30表示低于30A后持续1分钟停止充电
-	Globa_1->Charger_param.CurrentVoltageJudgmentFalg = 0;//0-不判断 1-进行判断。收到的电压电流和CCU发送过来的进行判断
+	Globa->Charger_param.model_rate_current = 21*1000;	      //单模块额定电流  0.001A
+	Globa->Charger_param.Charge_rate_current[0] = Globa->Charger_param.Charge_rate_number[0]*Globa->Charger_param.model_rate_current;		  //充电机1额定电流  0.001A
+	Globa->Charger_param.Charge_rate_current[1] = Globa->Charger_param.Charge_rate_number[1]*Globa->Charger_param.model_rate_current;		  //充电机2额定电流  0.001A
+	Globa->Charger_param.Charge_rate_current[2] = Globa->Charger_param.Charge_rate_number[2]*Globa->Charger_param.model_rate_current;		  //充电机1额定电流  0.001A
+	Globa->Charger_param.Charge_rate_current[3] = Globa->Charger_param.Charge_rate_number[3]*Globa->Charger_param.model_rate_current;		  //充电机2额定电流  0.001A
+	Globa->Charger_param.Charge_rate_current[4] = Globa->Charger_param.Charge_rate_number[4]*Globa->Charger_param.model_rate_current;		  //充电机2额定电流  0.001A
+
+	Globa->Charger_param.set_voltage = Globa->Charger_param.Charge_rate_voltage*4/5;
+	Globa->Charger_param.set_current = Globa->Charger_param.Charge_rate_current[0]*1/2;
+	Globa->Charger_param.System_Type = 0; //系统类型---0--双枪同时充 ---1双枪轮流充电 2--单枪立式 3-壁挂式
+
+	Globa->Charger_param.gun_config  = 4; 
+	Globa->Charger_param.Input_Relay_Ctl_Type = 0; 
+	memcpy(&Globa->Charger_param.SN[0], "0000000000000006", sizeof(Globa->Charger_param.SN));//充电终端序列号    41	N	n12
+
+	//Globa->Charger_param.couple_flag = 1;		          //充电机单、并机标示 1：单机 2：并机
+	//Globa->Charger_param.charge_addr = 1;		          //充电机地址偏移，组要是在并机模式时用，1、N
+
+	//Globa->Charger_param.limit_power = 9999;         //出功率限制点(离线时用的默认功率限制值)  9999kw
+	Globa->Charger_param.meter_config_flag = DCM3366Q;      //电能表配置标志 
+
+	Globa->Charger_param.input_over_limit = 445*1000;		    //输入过压点  0.001V 380*1.17 445
+	Globa->Charger_param.input_lown_limit = 300*1000;		    //输入欠压点  0.001V 380*0.79 300
+	Globa->Charger_param.output_over_limit = Globa->Charger_param.Charge_rate_voltage + 5*1000;	 //输出过压点  0.001V
+	Globa->Charger_param.output_lown_limit =  199*1000;		  //输出欠压点  0.001V
+	Globa->Charger_param.current_limit[0] = 250;
+	Globa->Charger_param.current_limit[1] = 250;
+	Globa->Charger_param.current_limit[2] = 250;
+	Globa->Charger_param.current_limit[3] = 250;
+	Globa->Charger_param.current_limit[4] = 250;
+	Globa->Charger_param.BMS_work = 1;		                  //系统工作模式  1：正常，2：测试
+	Globa->Charger_param.BMS_CAN_ver = 1;		               //BMS的协议版本 1：国家标准 2：普天标准-深圳版本
+	Globa->Charger_param.AC_DAQ_POS = 1;  //默认接在控制板
+
+
+	Globa->Charger_param.Price = 100000;//1.00000元 100;                //单价,精确到分 1元
+	for(i=0;i<CONTROL_DC_NUMBER;i++)
+		Globa->Charger_param.DC_Shunt_Range[i] = 300;       //直流分流器量程设置A
+	memcpy(&Globa->Charger_param.Power_meter_addr[0][0], "163001404491", 12);//电能表地址1 6字节
+	memcpy(&Globa->Charger_param.Power_meter_addr[1][0], "163001404505", 12);//电能表地址2 6字节
+	memcpy(&Globa->Charger_param.Power_meter_addr[2][0], "165254100522", 12);//电能表地址3 6字节
+	memcpy(&Globa->Charger_param.Power_meter_addr[3][0], "163001407644", 12);//电能表地址4 6字节
+	memcpy(&Globa->Charger_param.Power_meter_addr[4][0], "163001407645", 12);//电能表地址5 6字节
+	
+	memcpy(&Globa->Charger_param.AC_meter_addr[0], "AAAAAAAAAAAA", 12);
+
+	Globa->Charger_param.NEW_VOICE_Flag = 1;//
+	Globa->Charger_param.AC_Meter_CT = 120;//600:5--->120
+
+    for (i = 0; i < Globa->Charger_param.gun_config; i++)
+    {
+        Globa->Electric_pile_workstart_Enable[i] = 1;//桩使能
+    }
+
+	Globa->Charger_param.Key[0] = 0xFF;
+	Globa->Charger_param.Key[1] = 0xFF;
+	Globa->Charger_param.Key[2] = 0xFF;
+	Globa->Charger_param.Key[3] = 0xFF;
+	Globa->Charger_param.Key[4] = 0xFF;
+	Globa->Charger_param.Key[5] = 0xFF;
+
+	Globa->Charger_param.Charging_gun_type = 0;
+	Globa->Charger_param.gun_allowed_temp = 95;
+	Globa->Charger_param.Serial_Network  = 0;//后台协议走的是DTU还是网络 1--DTU 0--网络
+	Globa->Charger_param.DTU_Baudrate = 2;
+
+	Globa->Charger_param.SOC_limit = 100;
+	Globa->Charger_param.min_current = 30;
+	
+	Globa->Charger_param.heartbeat_idle_period = 40;
+	Globa->Charger_param.heartbeat_busy_period = 20;
+	
+	Globa->Charger_param.COM_Func_sel[0] = CARD_READER_FUNC;//COM1 RS232
+	Globa->Charger_param.COM_Func_sel[1] = COM_NOT_USED;//COM2 RS232
+	Globa->Charger_param.COM_Func_sel[2] = AC_INPUT_METER_FUNC;//COM3 RS485
+	Globa->Charger_param.COM_Func_sel[3] = DC_MEASURE_METER_FUNC;//COM4 RS485
+	Globa->Charger_param.COM_Func_sel[4] = AC_CAIJI_FUNC;//COM5 RS485
+	Globa->Charger_param.COM_Func_sel[5] = COM_NOT_USED;//COM6 RS485
+	
+	Globa->Charger_param.support_double_gun_to_one_car = 0;//默认启用双枪充1车
+	Globa->Charger_param.support_double_gun_power_allocation = 0;
+	strcpy(Globa->Charger_param.dev_location,"EAST");
+	strcpy(Globa->Charger_param.dev_user_info,"FreeScale ARM Linux");
+	
+	Globa->Charger_param.Power_Contor_By_Mode = 1;     //功率控制方式1-通过监控屏控制，0-通过CCU/TCU控制，因为多枪一般是给4枪配置的，
+	Globa->Charger_param.Contactor_Line_Num = 4;  //系统并机数量
+	Globa->Charger_param.Contactor_Line_Position[0] = (1<<4|3);  //系统并机路线节点：高4位为主控点（即控制并机的ccu）地4位为连接点
+	Globa->Charger_param.Contactor_Line_Position[0] = (3<<4|4);  //系统并机路线节点：高4位为主控点（即控制并机的ccu）地4位为连接点
+	Globa->Charger_param.Contactor_Line_Position[0] = (4<<4|2);  //系统并机路线节点：高4位为主控点（即控制并机的ccu）地4位为连接点
+	Globa->Charger_param.Contactor_Line_Position[0] = (2<<4|1);  //系统并机路线节点：高4位为主控点（即控制并机的ccu）地4位为连接点
+	Globa->Charger_param.Contactor_Line_Position[0] = (0<<4|0);  //系统并机路线节点：高4位为主控点（即控制并机的ccu）地4位为连接点	
+	Globa->Charger_param.CurrentVoltageJudgmentFalg = 0;
 }
 
 
@@ -191,9 +217,9 @@ extern STATUS System_param_save(void)
 	UINT16 ret;
 	UINT32 fileLen;
 	
-	fileLen = sizeof(Globa_1->Charger_param);
+	fileLen = sizeof(Globa->Charger_param);
 
-	ret = writeFile(F_UPSPARAM, (UINT8 *)&(Globa_1->Charger_param), fileLen, 0, 0);	
+	ret = writeFile(F_UPSPARAM, (UINT8 *)&(Globa->Charger_param), fileLen, 0, 0);	
 	if (ERROR16 == ret){
 		perror("Save Charger_param: write File error\n");
 		return ERROR16;
@@ -218,15 +244,15 @@ STATUS System_param_init(void)
 	UINT16 ret, ret1;
 	UINT32 fileLen;
 
-	memset(&(Globa_1->Charger_param), 0, sizeof(Globa_1->Charger_param));
-	ret = readWholeFile(F_UPSPARAM, (UINT8 *)&(Globa_1->Charger_param), &fileLen); /* 第一次读取参数文件 */
+	memset(&(Globa->Charger_param), 0, sizeof(Globa->Charger_param));
+	ret = readWholeFile(F_UPSPARAM, (UINT8 *)&(Globa->Charger_param), &fileLen); /* 第一次读取参数文件 */
 	if(OK == ret){
 		printf("read  Charger_param File sucess\n");
 		return OK;
 	}
 
     printf("read  Charger_param back File \n");
-	ret = readWholeFile(F_BAK_UPSPARAM, (UINT8 *)&(Globa_1->Charger_param), &fileLen);   /* 若读取错误，读取备份文件 */
+	ret = readWholeFile(F_BAK_UPSPARAM, (UINT8 *)&(Globa->Charger_param), &fileLen);   /* 若读取错误，读取备份文件 */
 	if(OK == ret){
 		ret1 = copyFile(F_BAK_UPSPARAM, F_UPSPARAM);   /* 拷贝副本到正本 *///add by dengjh 20110822
 		if(ERROR16 == ret1){
@@ -256,32 +282,42 @@ STATUS System_param_init(void)
 void	System_Param2_reset(void)
 {
 	UINT32 i = 0;
-	memset(&Globa_1->Charger_param2.invalid_card_ver[0], '0', sizeof(Globa_1->Charger_param2.invalid_card_ver));
-	memset(&Globa_1->Charger_param2.price_type_ver[0], '0', sizeof(Globa_1->Charger_param2.price_type_ver));
-	memset(&Globa_1->Charger_param2.APP_ver[0], '0', sizeof(Globa_1->Charger_param2.APP_ver));
-	memset(&Globa_1->Charger_param2.Software_Version[0], '0', sizeof(Globa_1->Charger_param2.Software_Version));
+	memset(&Globa->Charger_param2.invalid_card_ver[0], '0', sizeof(Globa->Charger_param2.invalid_card_ver));
+	memset(&Globa->Charger_param2.Software_Version[0], '0', sizeof(Globa->Charger_param2.Software_Version));
+	memset(&Globa->Charger_param2.APP_ver[0], '0', sizeof(Globa->Charger_param2.APP_ver));
+	memset(Globa->Charger_param2.http,0,sizeof(Globa->Charger_param2.http));
+	
+    /* 分时电价的默认信息 */
+    memset(&Globa->Charger_param2.price_type_ver[0], '0', sizeof(Globa->Charger_param2.price_type_ver));
+    Globa->Charger_param2.show_price_type = 0;  // 默认详细显示
+    Globa->Charger_param2.time_zone_num = 1;  // 默认1个时段
+	  
+    for (i = 0; i < TIME_SHARE_SECTION_NUMBER; i++)
+	{
+        Globa->Charger_param2.share_time_kwh_price[i] = 100000; // 默认1元   
+        Globa->Charger_param2.share_time_kwh_price_serve[i] = 100000; // 默认1元  
+        Globa->Charger_param2.time_zone_tabel[0] = 0;
+        Globa->Charger_param2.time_zone_feilv[0] = 0;
+	}
 
-	sprintf(&Globa_1->Charger_param2.http[0], "%s", "http://120.24.6.21/appinfos.do?sn=");
-	for(i = 0;i<4;i++){
-	  Globa_1->Charger_param2.share_time_kwh_price[i]= Globa_1->Charger_param.Price;  //单价,默认为非时电价
-	  Globa_1->Charger_param2.share_time_kwh_price_serve[i]= Globa_1->Charger_param.Serv_Price;  //单价,默认为非时电价
-	}
-  Globa_1->Charger_param2.time_zone_num = 1;
-  for(i = 0;i<12;i++){
-	  Globa_1->Charger_param2.time_zone_tabel[i]= 0;  //单价,默认为非时电价
-	  Globa_1->Charger_param2.time_zone_feilv[i]= 0;  //单价,默认为非时电价
-	}
-	Globa_1->Charger_param2.show_price_type = 0;//电价显示方式 0--详细显示 1--总电价显示
-	Globa_1->Charger_param2.IS_fixed_price = 0;
+    /* 预约费默认信息 */
+    Globa->Charger_param2.book_price = 0;
+
+    // 停车费默认免费
+    Globa->Charger_param2.charge_stop_price.stop_price_ver = 0;
+    Globa->Charger_param2.charge_stop_price.is_free_when_charge = 0;
+    Globa->Charger_param2.charge_stop_price.stop_price = 0;
+    Globa->Charger_param2.charge_stop_price.free_time = 0;
+	
 }
 extern STATUS System_param2_save(void)
 {
 	UINT16 ret;
 	UINT32 fileLen;
 	
-	fileLen = sizeof(Globa_1->Charger_param2);
+	fileLen = sizeof(Globa->Charger_param2);
 
-	ret = writeFile(F_UPSPARAM2, (UINT8 *)&(Globa_1->Charger_param2), fileLen, 0, 0);	
+	ret = writeFile(F_UPSPARAM2, (UINT8 *)&(Globa->Charger_param2), fileLen, 0, 0);	
 	if (ERROR16 == ret){
 		perror("Save Charger_param2: write File error\n");
 		return ERROR16;
@@ -305,15 +341,15 @@ STATUS System_param2_init(void)
 	UINT16 ret, ret1;
 	UINT32 fileLen;
 
-	memset(&(Globa_1->Charger_param2), 0, sizeof(Globa_1->Charger_param2));
-	ret = readWholeFile(F_UPSPARAM2, (UINT8 *)&(Globa_1->Charger_param2), &fileLen); /* 第一次读取参数文件 */
+	memset(&(Globa->Charger_param2), 0, sizeof(Globa->Charger_param2));
+	ret = readWholeFile(F_UPSPARAM2, (UINT8 *)&(Globa->Charger_param2), &fileLen); /* 第一次读取参数文件 */
 	if(OK == ret){
 		printf("read  Charger_param2 File sucess\n");
 		return OK;
 	}
 
     printf("read  Charger_param2 back File \n");
-	ret = readWholeFile(F_BAK_UPSPARAM2, (UINT8 *)&(Globa_1->Charger_param2), &fileLen);   /* 若读取错误，读取备份文件 */
+	ret = readWholeFile(F_BAK_UPSPARAM2, (UINT8 *)&(Globa->Charger_param2), &fileLen);   /* 若读取错误，读取备份文件 */
 	if(OK == ret){
 		ret1 = copyFile(F_BAK_UPSPARAM2, F_UPSPARAM2);   /* 拷贝副本到正本 *///add by dengjh 20110822
 		if(ERROR16 == ret1){
@@ -334,32 +370,35 @@ STATUS System_param2_init(void)
 	}
 }
 
+//定时电价
 void	System_ParamFixedpirce_reset(void)
 {
 	UINT32 i = 0;
 
-	for(i = 0;i<4;i++){
-	  Globa_1->charger_fixed_price.share_time_kwh_price[i]= Globa_1->Charger_param2.share_time_kwh_price[i];  //单价,默认为非时电价
-		Globa_1->charger_fixed_price.share_time_kwh_price_serve[i]= Globa_1->Charger_param2.share_time_kwh_price_serve[i];  //单价,默认为非时电价
+	for(i = 0;i<4;i++)
+	{
+		Globa->charger_fixed_price.share_time_kwh_price[i]= Globa->Charger_param2.share_time_kwh_price[i];  //单价,默认为非时电价
+		Globa->charger_fixed_price.share_time_kwh_price_serve[i]= Globa->Charger_param2.share_time_kwh_price_serve[i];  //单价,默认为非时电价
 	}
-  Globa_1->charger_fixed_price.time_zone_num = 1;
-  for(i = 0;i<12;i++){
-	  Globa_1->charger_fixed_price.time_zone_tabel[i] = Globa_1->Charger_param2.time_zone_tabel[i];  //单价,默认为非时电价
-	  Globa_1->charger_fixed_price.time_zone_feilv[i] = Globa_1->Charger_param2.time_zone_feilv[i];  //单价,默认为非时电价
+	Globa->charger_fixed_price.time_zone_num = 1;
+	for(i = 0;i<12;i++)
+	{
+	  Globa->charger_fixed_price.time_zone_tabel[i] = Globa->Charger_param2.time_zone_tabel[i];  //单价,默认为非时电价
+	  Globa->charger_fixed_price.time_zone_feilv[i] = Globa->Charger_param2.time_zone_feilv[i];  //单价,默认为非时电价
 	}
 	for(i=0;i<7;i++){
-		Globa_1->charger_fixed_price.fixed_price_effective_time[i] = 0;
+		Globa->charger_fixed_price.fixed_price_effective_time[i] = 0;
 	}
-	Globa_1->show_price_type = Globa_1->Charger_param2.show_price_type;
+	Globa->charger_fixed_price.show_price_type = Globa->Charger_param2.show_price_type;
 }
 extern STATUS System_param_Fixedpirce_save(void)
 {
 	UINT16 ret;
 	UINT32 fileLen;
 	
-	fileLen = sizeof(Globa_1->charger_fixed_price);
+	fileLen = sizeof(Globa->charger_fixed_price);
 
-	ret = writeFile(F_PARAMFixedpirce, (UINT8 *)&(Globa_1->charger_fixed_price), fileLen, 0, 0);	
+	ret = writeFile(F_PARAMFixedpirce, (UINT8 *)&(Globa->charger_fixed_price), fileLen, 0, 0);	
 	if (ERROR16 == ret){
 		perror("Save Charger_paramFixedpirce: write File error\n");
 		return ERROR16;
@@ -383,15 +422,15 @@ STATUS System_paramFixedpirce_init(void)
 	UINT16 ret, ret1;
 	UINT32 fileLen;
 
-	memset(&(Globa_1->charger_fixed_price), 0, sizeof(Globa_1->charger_fixed_price));
-	ret = readWholeFile(F_PARAMFixedpirce, (UINT8 *)&(Globa_1->charger_fixed_price), &fileLen); /* 第一次读取参数文件 */
+	memset(&(Globa->charger_fixed_price), 0, sizeof(Globa->charger_fixed_price));
+	ret = readWholeFile(F_PARAMFixedpirce, (UINT8 *)&(Globa->charger_fixed_price), &fileLen); /* 第一次读取参数文件 */
 	if(OK == ret){
 		printf("read  charger_fixed_price File sucess\n");
 		return OK;
 	}
 
     printf("read  Charger_paramFixedpirce back File \n");
-	ret = readWholeFile(F_BAK_PARAMFixedpirce, (UINT8 *)&(Globa_1->charger_fixed_price), &fileLen);   /* 若读取错误，读取备份文件 */
+	ret = readWholeFile(F_BAK_PARAMFixedpirce, (UINT8 *)&(Globa->charger_fixed_price), &fileLen);   /* 若读取错误，读取备份文件 */
 	if(OK == ret){
 		ret1 = copyFile(F_BAK_PARAMFixedpirce, F_PARAMFixedpirce);   /* 拷贝副本到正本 *///add by dengjh 20110822
 		if(ERROR16 == ret1){
@@ -413,51 +452,51 @@ STATUS System_paramFixedpirce_init(void)
 
 void	System_Charger_Shileld_Alarm_reset(void)
 {
-	Globa_1->Charger_Shileld_Alarm.Shileld_PE_Fault = 0;	       //屏蔽接地故障告警 ----非停机故障，指做显示	    
-	Globa_1->Charger_Shileld_Alarm.Shileld_AC_connect_lost = 0;	//屏蔽交流输通讯告警	---非停机故障，只提示告警信息    
-	Globa_1->Charger_Shileld_Alarm.Shileld_AC_input_switch_off = 0;//屏蔽交流输入开关跳闸-----非停机故障交流接触器
-	Globa_1->Charger_Shileld_Alarm.Shileld_AC_fanglei_off = 0;    //屏蔽交流防雷器跳闸---非停机故障，只提示告警信息 
-	Globa_1->Charger_Shileld_Alarm.Shileld_circuit_breaker_trip = 0;//交流断路器跳闸.2---非停机故障，只提示告警信息 
-	Globa_1->Charger_Shileld_Alarm.Shileld_circuit_breaker_off = 0;// 交流断路器断开.2---非停机故障，只提示告警信息 
-	Globa_1->Charger_Shileld_Alarm.Shileld_AC_input_over_limit = 0;//屏蔽交流输入过压保护 ----  ---非停机故障，只提示告警信息 
-	Globa_1->Charger_Shileld_Alarm.Shileld_AC_input_lown_limit = 0; //屏蔽交流输入欠压 ---非停机故障，只提示告警信息 
+	Globa->Charger_Shileld_Alarm.Shileld_PE_Fault = 0;	       //屏蔽接地故障告警 ----非停机故障，指做显示	    
+	Globa->Charger_Shileld_Alarm.Shileld_AC_connect_lost = 0;	//屏蔽交流输通讯告警	---非停机故障，只提示告警信息    
+	Globa->Charger_Shileld_Alarm.Shileld_AC_input_switch_off = 0;//屏蔽交流输入开关跳闸-----非停机故障交流接触器
+	Globa->Charger_Shileld_Alarm.Shileld_AC_fanglei_off = 0;    //屏蔽交流防雷器跳闸---非停机故障，只提示告警信息 
+	Globa->Charger_Shileld_Alarm.Shileld_circuit_breaker_trip = 0;//交流断路器跳闸.2---非停机故障，只提示告警信息 
+	Globa->Charger_Shileld_Alarm.Shileld_circuit_breaker_off = 0;// 交流断路器断开.2---非停机故障，只提示告警信息 
+	Globa->Charger_Shileld_Alarm.Shileld_AC_input_over_limit = 0;//屏蔽交流输入过压保护 ----  ---非停机故障，只提示告警信息 
+	Globa->Charger_Shileld_Alarm.Shileld_AC_input_lown_limit = 0; //屏蔽交流输入欠压 ---非停机故障，只提示告警信息 
 	
-	Globa_1->Charger_Shileld_Alarm.Shileld_GUN_LOCK_FAILURE = 0;  //屏蔽枪锁检测未通过
-	Globa_1->Charger_Shileld_Alarm.Shileld_AUXILIARY_POWER = 0;   //屏蔽辅助电源检测未通过
-	Globa_1->Charger_Shileld_Alarm.Shileld_OUTSIDE_VOLTAGE = 0;    //屏蔽输出接触器外侧电压检测（标准10V，放开100V）
-	Globa_1->Charger_Shileld_Alarm.Shileld_SELF_CHECK_V = 0;      //屏蔽自检输出电压异常
-  Globa_1->Charger_Shileld_Alarm.Shileld_CHARG_OUT_OVER_V = 0;  //屏蔽输出过压停止充电   ----  data2
-  Globa_1->Charger_Shileld_Alarm.Shileld_CHARG_OUT_Under_V = 0;  //屏蔽输出欠压停止充电   ----  data2
-	Globa_1->Charger_Shileld_Alarm.Shileld_CHARG_OUT_OVER_C = 0;  //屏蔽输出过流
-	Globa_1->Charger_Shileld_Alarm.Shileld_OUT_SHORT_CIRUIT = 0;  //屏蔽输出短路
+	Globa->Charger_Shileld_Alarm.Shileld_GUN_LOCK_FAILURE = 0;  //屏蔽枪锁检测未通过
+	Globa->Charger_Shileld_Alarm.Shileld_AUXILIARY_POWER = 0;   //屏蔽辅助电源检测未通过
+	Globa->Charger_Shileld_Alarm.Shileld_OUTSIDE_VOLTAGE = 0;    //屏蔽输出接触器外侧电压检测（标准10V，放开100V）
+	Globa->Charger_Shileld_Alarm.Shileld_SELF_CHECK_V = 0;      //屏蔽自检输出电压异常
+  Globa->Charger_Shileld_Alarm.Shileld_CHARG_OUT_OVER_V = 0;  //屏蔽输出过压停止充电   ----  data2
+  Globa->Charger_Shileld_Alarm.Shileld_CHARG_OUT_Under_V = 0;  //屏蔽输出欠压停止充电   ----  data2
+	Globa->Charger_Shileld_Alarm.Shileld_CHARG_OUT_OVER_C = 0;  //屏蔽输出过流
+	Globa->Charger_Shileld_Alarm.Shileld_OUT_SHORT_CIRUIT = 0;  //屏蔽输出短路
 	
-	Globa_1->Charger_Shileld_Alarm.Shileld_GUN_OVER_TEMP = 0;     //屏蔽充电枪温度过高
-	Globa_1->Charger_Shileld_Alarm.Shileld_INSULATION_CHECK = 0;   //屏蔽绝缘检测
-	Globa_1->Charger_Shileld_Alarm.Shileld_OUT_SWITCH = 0;       //屏蔽输出开关检测
-	Globa_1->Charger_Shileld_Alarm.Shileld_OUT_NO_CUR = 0;       //屏蔽输出无电流显示检测	
-	Globa_1->Charger_Shileld_Alarm.Shileld_BMS_WARN_Monomer_vol_anomaly = 0;          //屏蔽BMS状态:单体电压异常
-	Globa_1->Charger_Shileld_Alarm.Shileld_BMS_WARN_Soc_anomaly = 0;          //屏蔽BMS状态:SOC异常
-	Globa_1->Charger_Shileld_Alarm.Shileld_BMS_WARN_over_temp_anomaly = 0;          //屏蔽BMS状态:过温告警
-  Globa_1->Charger_Shileld_Alarm.Shileld_BMS_WARN_over_Cur_anomaly = 0;          //屏蔽BMS状态:BMS状态:过流告警
+	Globa->Charger_Shileld_Alarm.Shileld_GUN_OVER_TEMP = 0;     //屏蔽充电枪温度过高
+	Globa->Charger_Shileld_Alarm.Shileld_INSULATION_CHECK = 0;   //屏蔽绝缘检测
+	Globa->Charger_Shileld_Alarm.Shileld_OUT_SWITCH = 0;       //屏蔽输出开关检测
+	Globa->Charger_Shileld_Alarm.Shileld_OUT_NO_CUR = 0;       //屏蔽输出无电流显示检测	
+	Globa->Charger_Shileld_Alarm.Shileld_BMS_WARN_Monomer_vol_anomaly = 0;          //屏蔽BMS状态:单体电压异常
+	Globa->Charger_Shileld_Alarm.Shileld_BMS_WARN_Soc_anomaly = 0;          //屏蔽BMS状态:SOC异常
+	Globa->Charger_Shileld_Alarm.Shileld_BMS_WARN_over_temp_anomaly = 0;          //屏蔽BMS状态:过温告警
+  Globa->Charger_Shileld_Alarm.Shileld_BMS_WARN_over_Cur_anomaly = 0;          //屏蔽BMS状态:BMS状态:过流告警
 	
-	Globa_1->Charger_Shileld_Alarm.Shileld_BMS_WARN_Insulation_anomaly = 0;          //BMS状态:绝缘异常
-	Globa_1->Charger_Shileld_Alarm.Shileld_BMS_WARN_Outgoing_conn_anomaly = 0;          //BMS状态:输出连接器异常
+	Globa->Charger_Shileld_Alarm.Shileld_BMS_WARN_Insulation_anomaly = 0;          //BMS状态:绝缘异常
+	Globa->Charger_Shileld_Alarm.Shileld_BMS_WARN_Outgoing_conn_anomaly = 0;          //BMS状态:输出连接器异常
 	
-	Globa_1->Charger_Shileld_Alarm.Shileld_BMS_OUT_OVER_V = 0;          //BMS状态:输出连接器异常
-	Globa_1->Charger_Shileld_Alarm.Shileld_output_fuse_switch = 0;          ////输出熔丝段
+	Globa->Charger_Shileld_Alarm.Shileld_BMS_OUT_OVER_V = 0;          //BMS状态:输出连接器异常
+	Globa->Charger_Shileld_Alarm.Shileld_output_fuse_switch = 0;          ////输出熔丝段
 
-	Globa_1->Charger_Shileld_Alarm.Shileld_keep_data = 0;          //保留
+	Globa->Charger_Shileld_Alarm.Shileld_keep_data = 0;          //保留
 	
-	Globa_1->Charger_Shileld_Alarm.Shileld_CELL_V_falg = 0;          //是否上送单体电压标志
-	Globa_1->Charger_Shileld_Alarm.Shileld_CELL_T_falg = 0;          //是否上送单体温度标志
-	Globa_1->Charger_Shileld_Alarm.Shileld_Control_board_comm = 0;// 控制板通信异常
-	Globa_1->Charger_Shileld_Alarm.Shileld_meter_comm = 0;       //      电表通信异常
-	Globa_1->Charger_Shileld_Alarm.Shileld_keep_comm = 0;       //  监控屏上的其他异常
+	Globa->Charger_Shileld_Alarm.Shileld_CELL_V_falg = 0;          //是否上送单体电压标志
+	Globa->Charger_Shileld_Alarm.Shileld_CELL_T_falg = 0;          //是否上送单体温度标志
+	Globa->Charger_Shileld_Alarm.Shileld_Control_board_comm = 0;// 控制板通信异常
+	Globa->Charger_Shileld_Alarm.Shileld_meter_comm = 0;       //      电表通信异常
+	Globa->Charger_Shileld_Alarm.Shileld_keep_comm = 0;       //  监控屏上的其他异常
 
-  Globa_1->Charger_Shileld_Alarm.Shileld_keep[0] = 0;
-  Globa_1->Charger_Shileld_Alarm.Shileld_keep[1] = 0;
-  Globa_1->Charger_Shileld_Alarm.Shileld_keep[2] = 0;
-  Globa_1->Charger_Shileld_Alarm.Shileld_keep[3] = 0;
+  Globa->Charger_Shileld_Alarm.Shileld_keep[0] = 0;
+  Globa->Charger_Shileld_Alarm.Shileld_keep[1] = 0;
+  Globa->Charger_Shileld_Alarm.Shileld_keep[2] = 0;
+  Globa->Charger_Shileld_Alarm.Shileld_keep[3] = 0;
 
 }
 extern STATUS System_Charger_Shileld_Alarm_save(void)
@@ -465,9 +504,9 @@ extern STATUS System_Charger_Shileld_Alarm_save(void)
 	UINT16 ret;
 	UINT32 fileLen;
 	
-	fileLen = sizeof(Globa_1->Charger_Shileld_Alarm);
+	fileLen = sizeof(Globa->Charger_Shileld_Alarm);
 
-	ret = writeFile(F_Charger_Shileld_Alarm, (UINT8 *)&(Globa_1->Charger_Shileld_Alarm), fileLen, 0, 0);	
+	ret = writeFile(F_Charger_Shileld_Alarm, (UINT8 *)&(Globa->Charger_Shileld_Alarm), fileLen, 0, 0);	
 	if (ERROR16 == ret){
 		perror("Save Charger_Shileld_Alarm: write File error\n");
 		return ERROR16;
@@ -491,14 +530,14 @@ STATUS System_Charger_Shileld_Alarm_init(void)
 	UINT16 ret, ret1;
 	UINT32 fileLen;
 
-	memset(&(Globa_1->Charger_Shileld_Alarm), 0, sizeof(Globa_1->Charger_Shileld_Alarm));
-	ret = readWholeFile(F_Charger_Shileld_Alarm, (UINT8 *)&(Globa_1->Charger_Shileld_Alarm), &fileLen); /* 第一次读取参数文件 */
+	memset(&(Globa->Charger_Shileld_Alarm), 0, sizeof(Globa->Charger_Shileld_Alarm));
+	ret = readWholeFile(F_Charger_Shileld_Alarm, (UINT8 *)&(Globa->Charger_Shileld_Alarm), &fileLen); /* 第一次读取参数文件 */
 	if(OK == ret){
 		printf("read  Charger_Shileld_Alarm File sucess\n");
 		return OK;
 	}
   printf("read  Charger_Shileld_Alarm back File \n");
-	ret = readWholeFile(F_BAK_Charger_Shileld_Alarm, (UINT8 *)&(Globa_1->Charger_Shileld_Alarm), &fileLen);   /* 若读取错误，读取备份文件 */
+	ret = readWholeFile(F_BAK_Charger_Shileld_Alarm, (UINT8 *)&(Globa->Charger_Shileld_Alarm), &fileLen);   /* 若读取错误，读取备份文件 */
 	if(OK == ret){
 		ret1 = copyFile(F_BAK_Charger_Shileld_Alarm, F_Charger_Shileld_Alarm);   /* 拷贝副本到正本 *///add by dengjh 20110822
 		if(ERROR16 == ret1){
@@ -523,9 +562,9 @@ extern STATUS ISO8583_NET_setting_save(void)
 	UINT16 ret;
 	UINT32 fileLen;
 
-	fileLen = sizeof(Globa_1->ISO8583_NET_setting);
+	fileLen = sizeof(Globa->ISO8583_NET_setting);
 
-	ret = writeFile(F_SETNET_104, (UINT8 *)&(Globa_1->ISO8583_NET_setting), fileLen, 0, 0);	
+	ret = writeFile(F_SETNET_104, (UINT8 *)&(Globa->ISO8583_NET_setting), fileLen, 0, 0);	
 	if (ERROR16 == ret){
 		perror("Save net104 setting: write File error\n");
 		return ERROR16;
@@ -545,11 +584,11 @@ extern STATUS ISO8583_NET_setting_save(void)
 
 void ISO8583_NET_setting_reset(void)
 {
-	sprintf(Globa_1->ISO8583_NET_setting.ISO8583_Server_IP, "%s", "120.25.153.93");
-	Globa_1->ISO8583_NET_setting.ISO8583_Server_port[0] = 2407&0xff;
-	Globa_1->ISO8583_NET_setting.ISO8583_Server_port[1] = (2407>>8)&0xff;
-	Globa_1->ISO8583_NET_setting.addr[0] = 1;
-	Globa_1->ISO8583_NET_setting.addr[1] = 0;
+	sprintf(Globa->ISO8583_NET_setting.ISO8583_Server_IP, "%s", "218.16.97.171");
+	Globa->ISO8583_NET_setting.ISO8583_Server_port[0] = 2407&0xff;
+	Globa->ISO8583_NET_setting.ISO8583_Server_port[1] = (2407>>8)&0xff;
+	Globa->ISO8583_NET_setting.addr[0] = 1;
+	Globa->ISO8583_NET_setting.addr[1] = 0;
 }
 
 STATUS ISO8583_NET_setting_init(void)
@@ -558,15 +597,15 @@ STATUS ISO8583_NET_setting_init(void)
 	UINT16 ret, ret1;
 	UINT32 fileLen;	
 	
-	memset(&(Globa_1->ISO8583_NET_setting), 0, sizeof(Globa_1->ISO8583_NET_setting));
-	ret = readWholeFile(F_SETNET_104, (UINT8 *)&(Globa_1->ISO8583_NET_setting), &fileLen); 
+	memset(&(Globa->ISO8583_NET_setting), 0, sizeof(Globa->ISO8583_NET_setting));
+	ret = readWholeFile(F_SETNET_104, (UINT8 *)&(Globa->ISO8583_NET_setting), &fileLen); 
 	if(OK == ret){		
 		printf("read net104 setting File sucess\n");
 		return OK;
 	}
 
 	printf("read net104 setting back File \n");
-	ret = readWholeFile(F_BAK_SETNET_104, (UINT8 *)&(Globa_1->ISO8583_NET_setting), &fileLen);   /* 若读取错误，读取备份文件 */
+	ret = readWholeFile(F_BAK_SETNET_104, (UINT8 *)&(Globa->ISO8583_NET_setting), &fileLen);   /* 若读取错误，读取备份文件 */
 	if(OK == ret){
 		ret1 = copyFile(F_BAK_SETNET_104, F_SETNET_104);   /* 拷贝副本到正本 *///add by dengjh 20110822
 		if(ERROR16 == ret1){
@@ -584,148 +623,21 @@ STATUS ISO8583_NET_setting_init(void)
 	}
 }
 
-extern STATUS System_CarLOCK_Param_save(void)
-{
-	UINT16 ret;
-	UINT32 fileLen;
 
-	fileLen = sizeof(DEV_CFG);
-
-	ret = writeFile(F_CarLOCK_Param, (UINT8 *)&(dev_cfg.dev_para.plug_lock_ctl), fileLen, 0, 0);	
-	if (ERROR16 == ret){
-		perror("Save CarLOCK setting: write File error\n");
-		return ERROR16;
-        }
-	else
-		printf("Save CarLOCK setting:write File success\n");
-
-	ret = copyFile(F_CarLOCK_Param, F_BAK_CarLOCK_Param);    
-	if (ERROR16 == ret){
-		printf("Save CarLOCK_Param setting:copy File error\n");
-	}
-	else
-		printf("Save CarLOCK_Param setting:copy file success\n");
-
-    return OK;
-}
-
-void System_CarLOCK_Param_reset(void)
-{
-	dev_cfg.dev_para.plug_lock_ctl = 1;//是否启用枪锁控制,值0不启用，值1启用且检测锁状态，值2启用但不检测状态	
-	dev_cfg.dev_para.car_lock_addr[0] = 1;
-  dev_cfg.dev_para.car_lock_addr[1] = 2;
-
-	dev_cfg.dev_para.car_lock_num = 0;//车位锁数量0---2
-	dev_cfg.dev_para.car_lock_time = 1;//检测到无车的时候，车位上锁的时间,单位分钟，默认3分钟，在降下车锁后开始计时，超时后仍然无车则锁上车位
-	dev_cfg.dev_para.car_park_price = 100;//每10分钟的停车费，单位元，系数0.01
-  dev_cfg.dev_para.free_minutes_after_charge = 3*60 ;//充电完成后还可免费停车的时长,单位分钟
-	dev_cfg.dev_para.free_when_charge = 0;//充电期间是否免停车费，值1免费，值0不免费
-}
-
-STATUS System_CarLOCK_Param_init(void)
-{
-	UINT16 i;
-	UINT16 ret, ret1;
-	UINT32 fileLen;	
-	
-	memset(&(dev_cfg.dev_para.plug_lock_ctl), 0, sizeof(DEV_CFG));
-	ret = readWholeFile(F_CarLOCK_Param, (UINT8 *)&(dev_cfg.dev_para.plug_lock_ctl), &fileLen); 
-	if(OK == ret){		
-		printf("read CarLOCK_Param File sucess\n");
-		return OK;
-	}
-
-	printf("read CarLOCK_Param back File \n");
-	ret = readWholeFile(F_BAK_CarLOCK_Param, (UINT8 *)&(dev_cfg.dev_para.plug_lock_ctl), &fileLen);   /* 若读取错误，读取备份文件 */
-	if(OK == ret){
-		ret1 = copyFile(F_BAK_CarLOCK_Param, F_CarLOCK_Param);   /* 拷贝副本到正本 *///add by dengjh 20110822
-		if(ERROR16 == ret1){
-			printf("copy CarLOCK_Param back File error\n");
-		}else{
-			printf("copy CarLOCK_Param back File ok\n");
-		}
-		return OK;
-	}else{
-		System_CarLOCK_Param_reset();    /*备份文件同样出错，按照默认初始化内存 */
-		printf("read CarLOCK_Param back File error, auto reset\n");	
-		if(ERROR16 == System_CarLOCK_Param_save())
-			printf("ERROR CarLOCK_Param setting!\n");
-		return OK;
+void Power_Control_Config_init(void)
+{ 
+   int i =0;
+	for(i=0;i<CONTROL_DC_NUMBER;i++){
+		Globa->Control_DC_Infor_Data[i].kw_percent = 1000;
+		Globa->Control_DC_Infor_Data[i].kw_limit_end_time[0] = 0;
+		Globa->Control_DC_Infor_Data[i].kw_limit_end_time[1] = 0;
+		Globa->Control_DC_Infor_Data[i].kw_limit_end_time[2] = 0;
+		Globa->Control_DC_Infor_Data[i].kw_limit_end_time[3] = 15;
+		Globa->Control_DC_Infor_Data[i].kw_limit_end_time[4] = 20;
+		Globa->Control_DC_Infor_Data[i].kw_limit_end_time[5] = 9;
+		Globa->Control_DC_Infor_Data[i].kw_limit_end_time[6] = 19;
 	}
 }
-
-
-
-extern STATUS System_BackgroupIssued_Param_save(void)
-{
-	UINT16 ret;
-	UINT32 fileLen;
-
-	fileLen = sizeof(BackgroupIssued);
-
-	ret = writeFile(F_BackgroupIssued_Param, (UINT8 *)&(gBackgroupIssued.Electric_pile_workstart_Enable), fileLen, 0, 0);	
-	if (ERROR16 == ret){
-		perror("Save BackgroupIssued_Param setting: write File error\n");
-		return ERROR16;
-        }
-	else
-		printf("Save BackgroupIssued_Param setting:write File success\n");
-
-	ret = copyFile(F_BackgroupIssued_Param, F_BAK_BackgroupIssued_Param);    
-	if (ERROR16 == ret){
-		printf("Save BackgroupIssued_Param setting:copy File error\n");
-	}
-	else
-		printf("Save BackgroupIssued_Param setting:copy file success\n");
-
-    return OK;
-}
-
-void System_BackgroupIssued_reset(void)
-{
-  gBackgroupIssued.Electric_pile_workstart_Enable = 0;
-	gBackgroupIssued.keepdata[0] = 0;
-	gBackgroupIssued.keepdata[1] = 0;
-	gBackgroupIssued.keepdata[2] = 0;
-	gBackgroupIssued.keepdata1[0] = 0;
-	gBackgroupIssued.keepdata1[1] = 0;
-	gBackgroupIssued.keepdata1[2] = 0;
-}
-
-STATUS System_BackgroupIssued_Param_init(void)
-{
-	UINT16 i;
-	UINT16 ret, ret1;
-	UINT32 fileLen;	
-	
-	memset(&(gBackgroupIssued.Electric_pile_workstart_Enable), 0, sizeof(BackgroupIssued));
-	ret = readWholeFile(F_BackgroupIssued_Param, (UINT8 *)&(gBackgroupIssued.Electric_pile_workstart_Enable), &fileLen); 
-	if(OK == ret){		
-		printf("read BackgroupIssued_Param File sucess\n");
-		return OK;
-	}
-
-	printf("read BackgroupIssued_Param back File \n");
-	ret = readWholeFile(F_BAK_BackgroupIssued_Param, (UINT8 *)&(gBackgroupIssued.Electric_pile_workstart_Enable), &fileLen);   /* 若读取错误，读取备份文件 */
-	if(OK == ret){
-		ret1 = copyFile(F_BAK_BackgroupIssued_Param, F_BackgroupIssued_Param);   /* 拷贝副本到正本 *///add by dengjh 20110822
-		if(ERROR16 == ret1){
-			printf("copy BackgroupIssued_Param back File error\n");
-		}else{
-			printf("copy BackgroupIssued_Param back File ok\n");
-		}
-		return OK;
-	}else{
-		System_BackgroupIssued_reset();    /*备份文件同样出错，按照默认初始化内存 */
-		printf("read BackgroupIssued_Param back File error, auto reset\n");	
-		if(ERROR16 == System_BackgroupIssued_Param_save())
-			printf("ERROR BackgroupIssued_Param setting!\n");
-		return OK;
-	}
-}
-
-
-
 void arm_qt_msg_init(void)
 {
     key_t recv_id, send_id;
@@ -738,38 +650,18 @@ void arm_qt_msg_init(void)
       printf("-------------------------------------Create send_id error !\n\r" );
     }
 
-    if((Globa_1->arm_to_qt_msg_id = msgget(send_id, IPC_CREAT|0660))<0){
+    if((Globa->arm_to_qt_msg_id = msgget(send_id, IPC_CREAT|0660))<0){
       printf("Create arm_to_qt_msg_id error !\n\r" );
     }else{
-      printf("Create arm_to_qt_msg_id=%d\n\r", Globa_1->arm_to_qt_msg_id );
+      printf("Create arm_to_qt_msg_id=%d\n\r", Globa->arm_to_qt_msg_id );
     }
 
-    if((Globa_1->qt_to_arm_msg_id = msgget(recv_id, IPC_CREAT|0660))<0){
+    if((Globa->qt_to_arm_msg_id = msgget(recv_id, IPC_CREAT|0660))<0){
       printf("Create qt_to_arm_msg_id error !\n\r" );
     }else{
-      printf("Create qt_to_arm_msg_id=%d\n\r", Globa_1->qt_to_arm_msg_id );
+      printf("Create qt_to_arm_msg_id=%d\n\r", Globa->qt_to_arm_msg_id );
     }
 
-    /*********************第二把枪的通道*********************************************/
-    if((send_id = ftok("/home/root/", 4)) < 0){
-      printf("-------------------------------------Create recv_id error !\n\r" );
-    }
-
-    if((recv_id = ftok("/home/root/", 3)) < 0){
-      printf("-------------------------------------Create send_id error !\n\r" );
-    }
-
-    if((Globa_2->arm_to_qt_msg_id = msgget(send_id, IPC_CREAT|0660))<0){
-      printf("Create Globa_2->arm_to_qt_msg_id error !\n\r" );
-    }else{
-      printf("Create Globa_2->arm_to_qt_msg_id=%d\n\r", Globa_2->arm_to_qt_msg_id );
-    }
-
-    if((Globa_2->qt_to_arm_msg_id = msgget(recv_id, IPC_CREAT|0660))<0){
-      printf("Create Globa_2->qt_to_arm_msg_id error !\n\r" );
-    }else{
-      printf("Create Globa_2->qt_to_arm_msg_id=%d\n\r", Globa_2->qt_to_arm_msg_id );
-    }
 }
 
 
@@ -783,58 +675,75 @@ void arm_qt_msg_init(void)
 **********************************************************/
 void System_init(void)
 {
-	unsigned char tmp[48];
-
+	
+	int i;
 	LedRelayControl_init();
 
-
 	share_memory();
+	
 	System_param_init();
 	System_param2_init();
-  System_paramFixedpirce_init();
+	
 	System_Charger_Shileld_Alarm_init();//屏蔽告警功能
-	System_CarLOCK_Param_init();//地锁配置
-  System_BackgroupIssued_Param_init();//后台参数配置
-	Globa_1->Electric_pile_workstart_Enable = gBackgroupIssued.Electric_pile_workstart_Enable;
-	Globa_2->Electric_pile_workstart_Enable = gBackgroupIssued.Electric_pile_workstart_Enable;
-	
-	if((Globa_1->Charger_param.heartbeat_idle_period > 60)||(Globa_1->Charger_param.heartbeat_idle_period < 1))
+
+	if(Globa->Charger_param.gun_config > CONTROL_DC_NUMBER)
+		Globa->Charger_param.gun_config = CONTROL_DC_NUMBER;//最大4把枪===
+
+	////////////////////////////////TEST//////////////////////////
+    for (i = 0; i < Globa->Charger_param.gun_config; i++)
+    {
+        Globa->Electric_pile_workstart_Enable[i] = 1;//桩使能
+    } 
+	///////////////////////////////////////////////////////////////
+	for(i=0;i<CONTROL_DC_NUMBER;i++)
+		memset(&Globa->Control_DC_Infor_Data[i], 0x00, sizeof(Control_DC_INFOR));
+
+	if((Globa->Charger_param.SOC_limit > 100)||(Globa->Charger_param.SOC_limit < 20))
 	{
-		Globa_1->Charger_param.heartbeat_idle_period = 30;     //空闲心跳周期 秒
+	  Globa->Charger_param.SOC_limit = 100;	//SOC达到多少时，判断电流低于min_current后停止充电,值95表示95%
 	}
 	
-	if((Globa_1->Charger_param.heartbeat_busy_period > 40)||(Globa_1->Charger_param.heartbeat_busy_period < 1))
-	{
-  	Globa_1->Charger_param.heartbeat_busy_period = 5;     //充电心跳周期 秒
-	}
+	if( (Globa->Charger_param.min_current < 15)||(Globa->Charger_param.min_current > 250))
+		Globa->Charger_param.min_current = 15;
 	
-	if((Globa_1->Charger_param.SOC_limit > 100)||(Globa_1->Charger_param.SOC_limit < 20))
-	{
-	  Globa_1->Charger_param.SOC_limit = 100;	//SOC达到多少时，判断电流低于min_current后停止充电,值95表示95%
-	}
+	if(Globa->Charger_param.heartbeat_idle_period < 30 || Globa->Charger_param.heartbeat_idle_period > 120)
+		Globa->Charger_param.heartbeat_idle_period = 40;
+	if(Globa->Charger_param.heartbeat_busy_period < 5 || Globa->Charger_param.heartbeat_busy_period > 60)
+		Globa->Charger_param.heartbeat_busy_period = 20;
 	
-	if(Globa_1->Charger_param.min_current < 15)
-	{
-	  Globa_1->Charger_param.min_current = 15;//单位A  值10表示低于15A后持续1分钟停止充电
-	}
-
-	//必须有初值，不然后面上电签到时临时版本Globa_1->tmp_APP_ver[0]内存值未初始化
-	memcpy(&Globa_1->tmp_APP_ver[0], &Globa_1->Charger_param2.APP_ver[0], sizeof(Globa_1->Charger_param2.APP_ver));//APP版本号
-
-	memset(&Globa_1->Error, 0x00, sizeof(Globa_1->Error));
-
-	memcpy(Globa_2, Globa_1, sizeof(GLOBAVAL));//复制全局变量Globa_1的内容到Globa_1中，此时两份一样
-
+	if(Globa->Charger_param.COM_Func_sel[0] > MODBUS_SLAVE_FUNC)
+		Globa->Charger_param.COM_Func_sel[0] = CARD_READER_FUNC;
+	if(Globa->Charger_param.COM_Func_sel[1] > MODBUS_SLAVE_FUNC)
+		Globa->Charger_param.COM_Func_sel[1] = COM_NOT_USED;
+	if(Globa->Charger_param.COM_Func_sel[2] > COM_END_FUNC)
+		Globa->Charger_param.COM_Func_sel[2] = AC_INPUT_METER_FUNC;
+	if(Globa->Charger_param.COM_Func_sel[3] > COM_END_FUNC)
+		Globa->Charger_param.COM_Func_sel[3] = DC_MEASURE_METER_FUNC;
+	
+	if(Globa->Charger_param.COM_Func_sel[4] > COM_END_FUNC)
+		Globa->Charger_param.COM_Func_sel[4] = COM_NOT_USED;
+	if(Globa->Charger_param.COM_Func_sel[5] > COM_END_FUNC)
+		Globa->Charger_param.COM_Func_sel[5] = COM_NOT_USED;
+	
 	arm_qt_msg_init();
 
 	ISO8583_NET_setting_init();
+	Power_Control_Config_init();// 功率配置表
+	
+  memset(Globa->Charger_Contactor_param_data,0,SYS_CONTACTOR_NUMBER*sizeof(CHARGER_CONTACTOR_PARAM));
+	memset(Globa->Charger_gunbus_param_data,0,MODULE_INPUT_GROUP*sizeof(CHARGER_GUN_BUS_PARAM));
+  printf("---------------Charger_Contactor_param_data---Charger_gunbus_param_data-------------memset ok!\n\r" );
+
+  ModGroup_data_init(); //根据选择配置初始话数据
+	printf("---------------ModGroup_data_init------------init ok!\n\r" );
+
+  ModGroup_Diagram_list_init(); //初始关系表
+	printf("---------------ModGroup_Diagram_list_init------------init ok!\n\r" );
 	
 	pthread_mutex_init(&busy_db_pmutex, NULL);//初始化互斥对象
 	pthread_mutex_init(&mutex_log, NULL);//初始化互斥对象
-	pthread_mutex_init(&sw_fifo, NULL);//初始化互斥对象
-
-	GROUP1_RUN_LED_OFF;
-	GROUP2_RUN_LED_OFF;
+	pthread_mutex_init(&gLogMutex, NULL);//初始化互斥对象
+	pthread_mutex_init(&modbus_pc_mutex, NULL);//初始化互斥对象
 
 }
 /*******************************End of Param.c *******************************/
