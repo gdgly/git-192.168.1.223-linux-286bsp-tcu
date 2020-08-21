@@ -14,7 +14,6 @@
 
 #include    "RemoteComm.h"
 #include    "cJSON_ext.h"
-#include    "RemoteDataTransform.h"
 #include    "Data.h"
 #include    "TcuComm.h"
 #include    "Queue.h"
