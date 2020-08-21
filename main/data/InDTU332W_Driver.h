@@ -33,7 +33,26 @@ extern "C" {
 #endif
 
 #define InDTU332W_RX_FR_MIN_LEN 8// 9//修改为9个字节20151215//10
-#define DTU_UART_BAUD   dev_cfg.dev_para.uart2_dcb.baud
+
+#define     InDTU332W_IDLE_ST     0
+#define     SCAN_InDTU332W_ST     1 //扫描是否有GPRS模块
+#define     LOGIN_InDTU332W_ST    2
+#define     READ_InDTU332W_ST     3
+#define     WRTIE_InDTU332W_ST    4
+#define     RESET_InDTU332W_ST    5
+
+#define     GET_InDTU332W_CONN_ST    6 //获取DTU是否连接到指定的服务器端口
+#define     ACTIVE_InDTU332W_ST      7 //激活DTU模块的GPRS连接，触发美赛达DTU连接服务器
+
+#define     WR_DNS_ADDR_ST        8//设置DNS服务器地址
+#define     WR_ServIP_ADDR_ST     9//写域名地址
+#define     RE_ServIP_ADDR_ST     10//写域名地址
+
+#define     GET_InDTU332W_CSQ_ST  11//获取DTU信号强度
+#define     GET_InDTU332W_CSQ_ST2 12 //激活之后再次获取DTU信号强度 
+  
+#define     GET_REGISTRATION_ST  13//获取DTU关于卡的注册信息
+#define     GET_InDTU332W_ICCID_ST 14 //sim卡唯一对应的ID卡号20位
 
 typedef enum
 {
@@ -125,6 +144,10 @@ extern unsigned char	g_InDTU332W_conn_flag;//值0表示连接服务器不OK，值1 表示连接
 
 extern unsigned char  g_InDTU332W_gateway_ip[4];//服务器IP
 extern unsigned short g_InDTU332W_gateway_port;//服务器端口
+
+extern	unsigned char hexip[4];
+extern	unsigned char hexport[2];
+extern  unsigned char* server_name;
 
 #ifdef __cplusplus
     }

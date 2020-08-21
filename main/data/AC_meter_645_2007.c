@@ -27,7 +27,7 @@
 
 #define METER_645_DEBUG  0        //ISO8583_DEBUG 调试使能
 
-//extern UINT32 Meter_Read_Write_Watchdog;
+extern UINT32 Meter_Read_Write_Watchdog;
 
 
 //----645-1997读数据格式------------
@@ -101,7 +101,7 @@ static unsigned char Meter_645_cs(unsigned char *p, int L)
 
 
 //读总电量
-static int All_kwh_read(UINT32 *meter_now_All_KWH, int fd, unsigned char *addr)
+static int All_kwh_read(UINT32 *meter_now_All_KWH, int fd, unsigned char *addr,int DIR_Ctl_io)
 {
 	int i=0,j=0,start_flag=0;
     int Count,status;
@@ -132,14 +132,14 @@ static int All_kwh_read(UINT32 *meter_now_All_KWH, int fd, unsigned char *addr)
     memcpy(&SentBuf[4], ACMt_645_2007_All_Electricity_cmd, sizeof(ACMt_645_2007_All_Electricity_cmd));//复制表地址
 	
 	read_datas_tty(fd, recvBuf, 255, 1000000, 300000);//读空!
-	Led_Relay_Control(8, 0);
+	Led_Relay_Control(DIR_Ctl_io, COM_RS485_TX_LEVEL);
 	write(fd, SentBuf, sizeof(ACMt_645_2007_All_Electricity_cmd) + 4);
 	do{
 		ioctl(fd, TIOCSERGETLSR, &status);
 	} while (status!=TIOCSER_TEMT);
 	usleep(4000);
-	Led_Relay_Control(8, 1);
-	//Globa->ac_meter_tx_cnt++;
+	Led_Relay_Control(DIR_Ctl_io, COM_RS485_RX_LEVEL);
+	Globa->ac_meter_tx_cnt++;
 	Count = read_datas_tty(fd, recvBuf, 255, 1000000, 300000);//增加字节间超时，避免读取数据不全以及后续数据错位!
 	
 	#if METER_645_DEBUG
@@ -149,7 +149,7 @@ static int All_kwh_read(UINT32 *meter_now_All_KWH, int fd, unsigned char *addr)
 	printf("\n\n");
 	#endif
 	
-   if(Count >= (sizeof(ACMt_645_2007_All_Electricity_cmd)+expected_data_bytes))
+    if(Count >= (sizeof(ACMt_645_2007_All_Electricity_cmd)+expected_data_bytes))
 	{//响应可能没有0xfe引导码  +4个字节数据
 
         for(i=0;i<5;i++){
@@ -178,7 +178,7 @@ static int All_kwh_read(UINT32 *meter_now_All_KWH, int fd, unsigned char *addr)
 								bcd_to_int_1byte(recvBuf[start_flag + Dlt645_Read_ID3 + 3])*10000 + \
 								bcd_to_int_1byte(recvBuf[start_flag + Dlt645_Read_ID3 + 2])*100 + \
 								bcd_to_int_1byte(recvBuf[start_flag + Dlt645_Read_ID3 + 1]));
-						//Globa->ac_meter_rx_ok_cnt++;
+						Globa->ac_meter_rx_ok_cnt++;
 						return (0);//抄收数据正确
 					}
 				}
@@ -191,7 +191,7 @@ static int All_kwh_read(UINT32 *meter_now_All_KWH, int fd, unsigned char *addr)
 
 
 //读3相电压
-static int All_volt_read(unsigned int meter_volt[], int fd, unsigned char *addr)
+static int All_volt_read(unsigned int meter_volt[], int fd, unsigned char *addr,int DIR_Ctl_io)
 {
     int i=0,j=0,start_flag=0;
     int Count,status;
@@ -222,14 +222,14 @@ static int All_volt_read(unsigned int meter_volt[], int fd, unsigned char *addr)
     memcpy(&SentBuf[4], ACMt_645_2007_All_Electricity_cmd, sizeof(ACMt_645_2007_All_Electricity_cmd));//复制表地址
 
 	read_datas_tty(fd, recvBuf, 255, 1000000, 300000);//读空!
-    Led_Relay_Control(8, 0);
+    Led_Relay_Control(DIR_Ctl_io, COM_RS485_TX_LEVEL);
 	write(fd, SentBuf, sizeof(ACMt_645_2007_All_Electricity_cmd) + 4);
 	do{
 		ioctl(fd, TIOCSERGETLSR, &status);
 	} while (status!=TIOCSER_TEMT);
 	usleep(10000);
-	Led_Relay_Control(8, 1);
-	//Globa->ac_meter_tx_cnt++;
+	Led_Relay_Control(DIR_Ctl_io, COM_RS485_RX_LEVEL);
+	Globa->ac_meter_tx_cnt++;
 	Count = read_datas_tty(fd, recvBuf, 255, 1000000, 300000);	
 	
 	#if METER_645_DEBUG
@@ -270,7 +270,7 @@ static int All_volt_read(unsigned int meter_volt[], int fd, unsigned char *addr)
 						meter_volt[1] = (bcd_to_int_1byte(recvBuf[start_flag + Dlt645_Read_ID3 + 4])*100 + bcd_to_int_1byte(recvBuf[start_flag + Dlt645_Read_ID3 + 3]));	
 
 						meter_volt[2] = (bcd_to_int_1byte(recvBuf[start_flag + Dlt645_Read_ID3 + 6])*100 + bcd_to_int_1byte(recvBuf[start_flag + Dlt645_Read_ID3 + 5]));				
-						//Globa->ac_meter_rx_ok_cnt++;
+						Globa->ac_meter_rx_ok_cnt++;
 						return (0);//抄收数据正确
 					}
 				}
@@ -281,7 +281,7 @@ static int All_volt_read(unsigned int meter_volt[], int fd, unsigned char *addr)
     return (-1);
 }
 //读3相电流
-static int All_current_read(unsigned int meter_current[], int fd, unsigned char *addr)
+static int All_current_read(unsigned int meter_current[], int fd, unsigned char *addr,int DIR_Ctl_io)
 {
     int i=0,j=0,start_flag=0;
     int Count,status;
@@ -312,14 +312,14 @@ static int All_current_read(unsigned int meter_current[], int fd, unsigned char 
     memcpy(&SentBuf[4], ACMt_645_2007_All_Electricity_cmd, sizeof(ACMt_645_2007_All_Electricity_cmd));//复制表地址
 
 	read_datas_tty(fd, recvBuf, 255, 1000000, 300000);//读空!
-	Led_Relay_Control(8, 0);
+	Led_Relay_Control(DIR_Ctl_io, COM_RS485_TX_LEVEL);
 	write(fd, SentBuf, sizeof(ACMt_645_2007_All_Electricity_cmd) + 4);
 	do{
 		ioctl(fd, TIOCSERGETLSR, &status);
 	} while (status!=TIOCSER_TEMT);
 	usleep(10000);
-	Led_Relay_Control(8, 1);
-	//Globa->ac_meter_tx_cnt++;
+	Led_Relay_Control(DIR_Ctl_io, COM_RS485_RX_LEVEL);
+	Globa->ac_meter_tx_cnt++;
 	Count = read_datas_tty(fd, recvBuf, 255, 1000000, 300000);
 	#if METER_645_DEBUG
 	printf("AC_meter_645_2007 All_current_read return %d bytes:\n",Count);
@@ -359,7 +359,7 @@ static int All_current_read(unsigned int meter_current[], int fd, unsigned char 
 						meter_current[1] = (bcd_to_int_1byte(recvBuf[start_flag + Dlt645_Read_ID3 + 6])*10000 + bcd_to_int_1byte(recvBuf[start_flag + Dlt645_Read_ID3 + 5])*100 + bcd_to_int_1byte(recvBuf[start_flag + Dlt645_Read_ID3 + 4]));	
 
 						meter_current[2] = (bcd_to_int_1byte(recvBuf[start_flag + Dlt645_Read_ID3 + 9])*10000 + bcd_to_int_1byte(recvBuf[start_flag + Dlt645_Read_ID3 + 8])*100 + bcd_to_int_1byte(recvBuf[start_flag + Dlt645_Read_ID3 + 7]));				
-						//Globa->ac_meter_rx_ok_cnt++;
+						Globa->ac_meter_rx_ok_cnt++;
 						return (0);//抄收数据正确
 					}
 				}
@@ -372,7 +372,7 @@ static int All_current_read(unsigned int meter_current[], int fd, unsigned char 
 
 
 //读取总有功功率
-static int Active_Power_read(unsigned int meter_active_power[], int fd, unsigned char *addr)
+static int Active_Power_read(unsigned int meter_active_power[], int fd, unsigned char *addr,int DIR_Ctl_io)
 {
     int i=0,j=0,start_flag=0;
     int Count,status;
@@ -403,14 +403,14 @@ static int Active_Power_read(unsigned int meter_active_power[], int fd, unsigned
     memcpy(&SentBuf[4], ACMt_645_2007_All_Electricity_cmd, sizeof(ACMt_645_2007_All_Electricity_cmd));//复制表地址
 
 	read_datas_tty(fd, recvBuf, 255, 1000000, 300000);//读空!
-    Led_Relay_Control(8, 0);
+    Led_Relay_Control(DIR_Ctl_io, COM_RS485_TX_LEVEL);
 	write(fd, SentBuf, sizeof(ACMt_645_2007_All_Electricity_cmd) + 4);
 	do{
 		ioctl(fd, TIOCSERGETLSR, &status);
 	} while (status!=TIOCSER_TEMT);
 	usleep(10000);
-	Led_Relay_Control(8, 1);
-	//Globa->ac_meter_tx_cnt++;
+	Led_Relay_Control(DIR_Ctl_io, COM_RS485_RX_LEVEL);
+	Globa->ac_meter_tx_cnt++;
 	Count = read_datas_tty(fd, recvBuf, 255, 1000000, 300000);
 	
 	#if METER_645_DEBUG
@@ -447,7 +447,7 @@ static int Active_Power_read(unsigned int meter_active_power[], int fd, unsigned
 					if((recvBuf[start_flag+Dlt645_Read_ID0] == READ_DI0)&&(recvBuf[start_flag+Dlt645_Read_ID1] == READ_DI1)&&(recvBuf[start_flag+Dlt645_Read_ID2] == READ_DI2)&&(recvBuf[start_flag+Dlt645_Read_ID3] == READ_DI3)){//标识符正确
 
 						meter_active_power[0] = (bcd_to_int_1byte(recvBuf[start_flag + Dlt645_Read_ID3 + 3])*10000 + bcd_to_int_1byte(recvBuf[start_flag + Dlt645_Read_ID3 + 2])*100 + bcd_to_int_1byte(recvBuf[start_flag + Dlt645_Read_ID3 + 1]));
-					//	Globa->ac_meter_rx_ok_cnt++;
+						Globa->ac_meter_rx_ok_cnt++;
 						return (0);//抄收数据正确
 					}
 				}
@@ -463,12 +463,13 @@ static int Active_Power_read(unsigned int meter_active_power[], int fd, unsigned
 
 /*********************************************************
 **description：电表读写线程
-***parameter  :none
+***parameter  :para---串口设备名字符串
 ***return		  :none
 **********************************************************/
-static void Meter_Read_Write_Task(void)
+static void Meter_Read_Write_Task(void* para)
 {
 	int fd, Ret = 0;
+	int DIR_Ctl_io = COM3_DIR_IO;//IO换向
 	UINT32 meter_connect1 = 0;
 	UINT32 meter_connect_count1 = 0;
 	unsigned char AC_meter_addr[12];
@@ -476,20 +477,31 @@ static void Meter_Read_Write_Task(void)
 	unsigned int meter_current[3]={0,0,0};//3相电流 0.001A
 	unsigned int meter_active_power[3]={0,0,0};//总有功功率//0.0001 kw	
 	unsigned int meter_now_KWH = 0;		//交流有功电能 0.01kwh
+	#define CT_RATIO   80 //CT变比400:5 // Globa->Charger_param.AC_Meter_CT
 	memcpy(AC_meter_addr, "AAAAAAAAAAAA", 12);
 	
-	fd = OpenDev(AC_METER_COM_ID);
+	Com_run_para  com_thread_para = *((Com_run_para*)para);
+	if( SYS_COM3 == com_thread_para.com_id)
+		DIR_Ctl_io = COM3_DIR_IO;	
+	if( SYS_COM4 == com_thread_para.com_id)
+		DIR_Ctl_io = COM4_DIR_IO;	
+	if( SYS_COM5 == com_thread_para.com_id)
+		DIR_Ctl_io = COM5_DIR_IO;	
+	if( SYS_COM6 == com_thread_para.com_id)
+		DIR_Ctl_io = COM6_DIR_IO;	
+	
+	fd = OpenDev(com_thread_para.com_dev_name);
 	if(fd == -1) 
 	{
 		while(1);
 	}else
 	{
-		//set_speed(fd, 9600);//test
-		set_speed(fd, 2400);
-		set_Parity(fd, 8, 1, 2);//偶校验
+		set_speed(fd, com_thread_para.com_baud);
+		//set_Parity(fd, 8, 1, 2);//偶校验
+		set_Parity(fd, com_thread_para.com_data_bits, com_thread_para.com_stop_bits, com_thread_para.even_odd);//偶校验
 		close(fd);
 	}
-	fd = OpenDev(AC_METER_COM_ID);
+	fd = OpenDev(com_thread_para.com_dev_name);
 	if(fd == -1) 
 	{
 		while(1);
@@ -499,56 +511,44 @@ static void Meter_Read_Write_Task(void)
 	meter_connect1 = 0;
 	while(1)
 	{
-		usleep(200000);//100ms    500K 7-8秒一度电
-	//	Meter_Read_Write_Watchdog = 1;
-		meter_connect1 = 0;
+		//usleep(200000);//100ms    500K 7-8秒一度电
+		Meter_Read_Write_Watchdog = 1;
+
+		
 		//读正向总有功电量
-		Ret = All_kwh_read(&meter_now_KWH, fd, AC_meter_addr);
+		Ret = All_kwh_read(&meter_now_KWH, fd, AC_meter_addr,DIR_Ctl_io);
 		if(0 == Ret)
 		{
 			meter_connect1 = 1;
-			Globa_1->ac_meter_kwh = meter_now_KWH*Globa_1->Charger_param.AC_Meter_CT;//交流电表度数 0.01kwh	
-			printf("Globa_1->ac_meter_kwh = %d.%d kwh\n",Globa_1->ac_meter_kwh/100,Globa_1->ac_meter_kwh%100);			
-  		}	
+			Globa->ac_meter_kwh = meter_now_KWH*Globa->Charger_param.AC_Meter_CT;//交流电表度数 0.01kwh	
+			//printf("Globa->ac_meter_kwh = %d.%d kwh\n",Globa->ac_meter_kwh/100,Globa->ac_meter_kwh%100);			
+  	}	
 		
-		usleep(100000);
+		
 		//读电压
-		Ret = All_volt_read(meter_volt, fd, AC_meter_addr);
+		Ret = All_volt_read(meter_volt, fd, AC_meter_addr,DIR_Ctl_io);
 		if(0 == Ret)
 		{
 			meter_connect1 = 1;
-			Globa_1->ac_volt[0] = meter_volt[0];//3相输入电压0.1V
-			Globa_1->ac_volt[1] = meter_volt[1];//3相输入电压0.1V		
-			Globa_1->ac_volt[2] = meter_volt[2];//3相输入电压0.1V					
-    }
-		
-		usleep(100000);
-		//读电流
-		Ret = All_current_read(meter_current, fd, AC_meter_addr);
-		if(0 == Ret)
-		{
-			meter_connect1 = 1;
-			Globa_1->ac_current[0] = meter_current[0]*Globa_1->Charger_param.AC_Meter_CT/10;//3相输入电流0.01AV
-			Globa_1->ac_current[1] = meter_current[1]*Globa_1->Charger_param.AC_Meter_CT/10;//3相输入电流0.01A	
-			Globa_1->ac_current[2] = meter_current[2]*Globa_1->Charger_param.AC_Meter_CT/10;//3相输入电流0.01A				
-    }
-		
-		if(meter_connect1 == 0){
-  		meter_connect_count1++;
-  	  if(meter_connect_count1 >= 10){
-  			meter_connect_count1 = 0;
-  			if(Globa_1->Error.ac_meter_connect_lost == 0){
-  				Globa_1->Error.ac_meter_connect_lost = 1;
-					sent_warning_message(0x99, 57, 0, 0);
-  			}
-			}
-  	}else{
-  		meter_connect_count1 = 0;
-  		if(Globa_1->Error.ac_meter_connect_lost == 1){
-  			Globa_1->Error.ac_meter_connect_lost = 0;
-				sent_warning_message(0x98, 57, 0, 0);
+			Globa->ac_volt[0] = meter_volt[0];//3相输入电压0.1V
+			Globa->ac_volt[1] = meter_volt[1];//3相输入电压0.1V		
+			Globa->ac_volt[2] = meter_volt[2];//3相输入电压0.1V					
   		}
-  	}
+		
+		
+		//读电流
+		Ret = All_current_read(meter_current, fd, AC_meter_addr,DIR_Ctl_io);
+		if(0 == Ret)
+		{
+			meter_connect1 = 1;
+			Globa->ac_current[0] = meter_current[0]*Globa->Charger_param.AC_Meter_CT/10;//3相输入电流0.01AV
+			Globa->ac_current[1] = meter_current[1]*Globa->Charger_param.AC_Meter_CT/10;//3相输入电流0.01A	
+			Globa->ac_current[2] = meter_current[2]*Globa->Charger_param.AC_Meter_CT/10;//3相输入电流0.01A				
+  		}
+		
+		
+		usleep(200000);//200ms	
+	  
 	}
 }
 
@@ -557,7 +557,7 @@ static void Meter_Read_Write_Task(void)
 ***parameter  :none
 ***return		  :none
 **********************************************************/
-extern void AC_2007Meter_Read_Write_Thread(void)
+extern void AC_2007Meter_Read_Write_Thread(void* para)
 {
 	pthread_t td1;
 	int ret ,stacksize = 1024*1024;
@@ -572,7 +572,7 @@ extern void AC_2007Meter_Read_Write_Thread(void)
 		return;
 	
 	/* 创建自动串口抄收线程 */
-	if(0 != pthread_create(&td1, &attr, (void *)Meter_Read_Write_Task, NULL)){
+	if(0 != pthread_create(&td1, &attr, (void *)Meter_Read_Write_Task, para)){
 		perror("####pthread_create IC_Read_Write_Task ERROR ####\n\n");
 	}
 

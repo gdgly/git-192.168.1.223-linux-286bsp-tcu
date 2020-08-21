@@ -438,64 +438,7 @@ void CARD_RUN_LogOut(const char *fmt, ...)
     return;
 }
 
-void COMM_RUN_LogOut(const char *fmt, ...)
-{
-    va_list ap;
-    if(pthread_mutex_lock(&gLogMutex)!=0)
-    {
-        pthread_mutex_init(&gLogMutex,NULL);
-        if(pthread_mutex_lock(&gLogMutex)!=0)
-            return;
-    }
-    va_start( ap, fmt );
-    Log_Prn( fmt, ap, (char *)COMM_RUN_LOG_FILE ,APP_LOG_MAX_SIZE);
-    va_end( ap );
-    if(pthread_mutex_unlock(&gLogMutex)!=0)
-    {
-        pthread_mutex_init(&gLogMutex,NULL);
-    }
-    return;
-}
-void RunEventLogOut_1(const char *fmt, ...)
-{
-    va_list ap;
-    if(pthread_mutex_lock(&gLogMutex)!=0)
-    {
-        pthread_mutex_init(&gLogMutex,NULL);
-        if(pthread_mutex_lock(&gLogMutex)!=0)
-            return;
-    }
-    va_start( ap, fmt );
-    Log_Prn( fmt, ap, (char *)RUN_EVENT_1_LOG_FILE ,APP_LOG_MAX_SIZE);
-    va_end( ap );
-    if(pthread_mutex_unlock(&gLogMutex)!=0)
-    {
-        pthread_mutex_init(&gLogMutex,NULL);
-    }
-    return;
-}
-
-void RunEventLogOut_2(const char *fmt, ...)
-{
-    va_list ap;
-    if(pthread_mutex_lock(&gLogMutex)!=0)
-    {
-        pthread_mutex_init(&gLogMutex,NULL);
-        if(pthread_mutex_lock(&gLogMutex)!=0)
-            return;
-    }
-    va_start( ap, fmt );
-    Log_Prn( fmt, ap, (char *)RUN_EVENT_2_LOG_FILE ,APP_LOG_MAX_SIZE);
-    va_end( ap );
-    if(pthread_mutex_unlock(&gLogMutex)!=0)
-    {
-        pthread_mutex_init(&gLogMutex,NULL);
-    }
-    return;
-}
-
-
-void CARLOCK_RUN_LogOut(const char *fmt, ...)
+void BatteryLogOut(const char *fmt, ...)
 {
     if(pthread_mutex_lock(&gLogMutex)!=0)
     {
@@ -505,7 +448,7 @@ void CARLOCK_RUN_LogOut(const char *fmt, ...)
     }
     va_list ap;
     va_start( ap, fmt );
-    Log_Prn( fmt, ap, (char *)CARLOCK_RUN_LOG_FILE ,APP_LOG_MAX_SIZE);
+    Log_Prn( fmt, ap, (char *)BATTERY_LOG_FILE ,APP_LOG_MAX_SIZE);
     va_end( ap );
 
     if(pthread_mutex_unlock(&gLogMutex)!=0)
@@ -515,7 +458,7 @@ void CARLOCK_RUN_LogOut(const char *fmt, ...)
     }
     return;
 }
-void ControlLogOut(const char *fmt, ...)
+void SysControlLogOut(const char *fmt, ...)
 {
     if(pthread_mutex_lock(&gLogMutex)!=0)
     {
@@ -531,6 +474,144 @@ void ControlLogOut(const char *fmt, ...)
     {
         pthread_mutex_init(&gLogMutex,NULL);
 
+    }
+    return;
+}
+//枪运行情况
+void RUN_GUN_ControlLogOut(char gun,const char *fmt, ...)
+{
+	
+    if(pthread_mutex_lock(&gLogMutex)!=0)
+    {
+        pthread_mutex_init(&gLogMutex,NULL);
+        if(pthread_mutex_lock(&gLogMutex)!=0)
+            return;
+    }
+    va_list ap;
+    va_start( ap, fmt );
+		
+		if(gun == 0)
+		{
+      Log_Prn( fmt, ap, (char *)RUNGUN1_LOG_FILE ,APP_LOG_MAX_SIZE);
+		}else  if(gun == 1)
+		{
+      Log_Prn( fmt, ap, (char *)RUNGUN2_LOG_FILE ,APP_LOG_MAX_SIZE);
+		}else if(gun == 2)
+		{
+      Log_Prn( fmt, ap, (char *)RUNGUN3_LOG_FILE ,APP_LOG_MAX_SIZE);
+		}else if(gun == 3)
+		{
+      Log_Prn( fmt, ap, (char *)RUNGUN4_LOG_FILE ,APP_LOG_MAX_SIZE);
+		}else if(gun == 4)
+		{
+      Log_Prn( fmt, ap, (char *)RUNGUN5_LOG_FILE ,APP_LOG_MAX_SIZE);
+		}
+	
+    va_end( ap );
+    if(pthread_mutex_unlock(&gLogMutex)!=0)
+    {
+        pthread_mutex_init(&gLogMutex,NULL);
+
+    }
+    return;
+}
+
+//枪运行情况
+void RUN_GUN_ControlErrLogOut(char gun,const char *fmt, ...)
+{
+	
+    if(pthread_mutex_lock(&gLogMutex)!=0)
+    {
+        pthread_mutex_init(&gLogMutex,NULL);
+        if(pthread_mutex_lock(&gLogMutex)!=0)
+            return;
+    }
+    va_list ap;
+    va_start( ap, fmt );
+		
+		if(gun == 0)
+		{
+      Log_Prn( fmt, ap, (char *)RUNGUN1_ErrLOG_FILE ,APP_LOG_MAX_SIZE);
+		}else  if(gun == 1)
+		{
+      Log_Prn( fmt, ap, (char *)RUNGUN2_ErrLOG_FILE ,APP_LOG_MAX_SIZE);
+		}else if(gun == 2)
+		{
+      Log_Prn( fmt, ap, (char *)RUNGUN3_ErrLOG_FILE ,APP_LOG_MAX_SIZE);
+		}else if(gun == 3)
+		{
+      Log_Prn( fmt, ap, (char *)RUNGUN4_ErrLOG_FILE ,APP_LOG_MAX_SIZE);
+		}else if(gun == 4)
+		{
+      Log_Prn( fmt, ap, (char *)RUNGUN5_ErrLOG_FILE ,APP_LOG_MAX_SIZE);
+		}
+	
+    va_end( ap );
+    if(pthread_mutex_unlock(&gLogMutex)!=0)
+    {
+        pthread_mutex_init(&gLogMutex,NULL);
+
+    }
+    return;
+}
+void PowerProcesLogOut(int Group,const char *fmt, ...)
+{
+	  char log_pwd[50] ={0}; 
+    va_list ap;
+    if(pthread_mutex_lock(&gLogMutex)!=0)
+    {
+        pthread_mutex_init(&gLogMutex,NULL);
+        if(pthread_mutex_lock(&gLogMutex)!=0)
+            return;
+    }
+    va_start( ap, fmt);
+		sprintf(log_pwd,"%s%d.log",POWER_PROCES_LOG_FILE,(Group+1));
+    Log_Prn( fmt, ap, (char *)log_pwd ,APP_LOG_MAX_SIZE);
+    va_end( ap );
+    if(pthread_mutex_unlock(&gLogMutex)!=0)
+    {
+        pthread_mutex_init(&gLogMutex,NULL);
+    }
+    return;
+}
+void RunEventLogOut(int Group,const char *fmt, ...)
+{
+	  char log_pwd[50] ={0}; 
+    va_list ap;
+    if(pthread_mutex_lock(&gLogMutex)!=0)
+    {
+        pthread_mutex_init(&gLogMutex,NULL);
+        if(pthread_mutex_lock(&gLogMutex)!=0)
+            return;
+    }
+    va_start( ap, fmt);
+		sprintf(log_pwd,"%s%d.log",RUNEVENT_LOG_FILE,(Group+1));
+    Log_Prn( fmt, ap, (char *)log_pwd ,APP_LOG_MAX_SIZE);
+    va_end( ap );
+    if(pthread_mutex_unlock(&gLogMutex)!=0)
+    {
+        pthread_mutex_init(&gLogMutex,NULL);
+    }
+    return;
+}
+void ChargeProcesLogOut(int Gun ,const char *fmt, ...)
+{
+	  char log_pwd[50] ={0}; 
+    va_list ap;
+    if(pthread_mutex_lock(&gLogMutex)!=0)
+    {
+        pthread_mutex_init(&gLogMutex,NULL);
+        if(pthread_mutex_lock(&gLogMutex)!=0)
+            return;
+    }
+    va_start( ap, fmt );
+	  sprintf(log_pwd,"%s%d.log",CHARGE_PROCES_LOG_FILE,(Gun+1));
+
+    Log_Prn( fmt, ap, (char *)log_pwd,APP_LOG_MAX_SIZE);
+    va_end( ap );
+    if(pthread_mutex_unlock(&gLogMutex)!=0)
+    {
+        pthread_mutex_init(&gLogMutex,NULL);
     }
     return;
 }

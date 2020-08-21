@@ -298,8 +298,8 @@ unsigned char InDTU332W_Single_WR_Frame(unsigned char* tx_buf, eInDTU332W_CFG_TA
 			tx_buf[tx_len++] = hexip[1];
 			tx_buf[tx_len++] = hexip[2];
 			tx_buf[tx_len++] = hexip[3];
-			tx_buf[tx_len++] = hexport[1];//Globa_1->ISO8583_NET_setting.ISO8583_Server_port[1];
-			tx_buf[tx_len++] = hexport[0];//Globa_1->ISO8583_NET_setting.ISO8583_Server_port[0];			
+			tx_buf[tx_len++] = hexport[1];//Globa->ISO8583_NET_setting.ISO8583_Server_port[1];
+			tx_buf[tx_len++] = hexport[0];//Globa->ISO8583_NET_setting.ISO8583_Server_port[0];			
 			break;
 	
 			case TAG_UART1_BAUD:
@@ -468,39 +468,39 @@ unsigned char InDTU332W_Response_Handler(unsigned char* rx_buf,unsigned short rx
 									break;
 								case TAG_CSQ_ST://读取信号强度
 									if(rx_len == 14){//响应帧长度OK
-									 // Globa_1->Signals_value_No = rx_buf[11];//信号强度	
+									 // Globa->Signals_value_No = rx_buf[11];//信号强度	
 									 if(rx_buf[11] >= 99){
 										 rx_buf[11] = 0;
 									 }
 									 
-									/* if(Globa_1->Registration_value == 0){
-										  Globa_1->Signals_value_No = 0;
+									/* if(Globa->Registration_value == 0){
+										  Globa->Signals_value_No = 0;
 									 }else {
-                     Globa_1->Signals_value_No = (((rx_buf[11]*100)/31)+19)/20;
+                     Globa->Signals_value_No = (((rx_buf[11]*100)/31)+19)/20;
 									 }*/
-									  Globa_1->Signals_value_No = (((rx_buf[11]*100)/31)+19)/20;
+									  Globa->Signals_value_No = (((rx_buf[11]*100)/31)+19)/20;
 
-           					printf("读取信号强度-----No %d  rx_buf[11] =%d \n",Globa_1->Signals_value_No,rx_buf[11]);
+           					printf("读取信号强度-----No %d  rx_buf[11] =%d \n",Globa->Signals_value_No,rx_buf[11]);
 									}else{
 										result = 5;
 									}
 								 break;
 								case TAG_REGISTRATION_ST:// = 0x81A1,//查询注册状态
 									if(rx_len == 15){//响应帧长度OK
-										Globa_1->Registration_value = rx_buf[12];//查询注册状态
-										if(!((Globa_1->Registration_value == 0x01)||(Globa_1->Registration_value == 0x05))){
-											Globa_1->Signals_value_No = 0;
+										Globa->Registration_value = rx_buf[12];//查询注册状态
+										if(!((Globa->Registration_value == 0x01)||(Globa->Registration_value == 0x05))){
+											Globa->Signals_value_No = 0;
 										}
-										printf("查询注册状态----= %d  rx_buf[12] =%d  rx_buf[12] =%d \n",Globa_1->Registration_value,rx_buf[11],rx_buf[12]);
+										printf("查询注册状态----= %d  rx_buf[12] =%d  rx_buf[12] =%d \n",Globa->Registration_value,rx_buf[11],rx_buf[12]);
 									}else{
 										result = 5;
 									}
 									break;
 	              case TAG_ICCID_VALUE: //0x81D0,//sim卡唯一对应的ID卡号20位
 									if(rx_len >= 33){//响应帧长度OK
-										//memcpy(&Globa_1->ICCID_value[0], &rx_buf[11], sizeof(Globa_1->ICCID_value));
-										hex_to_str(&Globa_1->ICCID_value[0], &rx_buf[11], 20);
-										printf("sim卡唯一对应的ID卡号20位---%s-= \n",Globa_1->ICCID_value);
+										//memcpy(&Globa->ICCID_value[0], &rx_buf[11], sizeof(Globa->ICCID_value));
+										hex_to_str(&Globa->ICCID_value[0], &rx_buf[11], 20);
+										printf("sim卡唯一对应的ID卡号20位---%s-= \n",Globa->ICCID_value);
 
                     int  i=0;
 										for(i =0;i<20;i++){

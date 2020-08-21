@@ -21,15 +21,15 @@
 #include <string.h>
 #include <pthread.h>
 #include <asm/ioctls.h>
-
+#include <sys/prctl.h>
 
 #include "globalvar.h"
 #define METER_645_DEBUG 0        //ISO8583_DEBUG 调试使能
 
 extern UINT32 Meter_Read_Write_Watchdog;
-extern UINT32 Dc_shunt_Set_meter_flag_1;
-extern UINT32 Dc_shunt_Set_meter_flag_2;
+extern UINT32 Dc_shunt_Set_meter_flag[CONTROL_DC_NUMBER];
 
+static UINT32 Dc_shunt_Set_meter_done_flag[CONTROL_DC_NUMBER];
 //----645-1997读数据格式------------
 typedef enum Dlt645Read_2007{
     Dlt645_Read_0x681,                    //0
@@ -39,7 +39,7 @@ typedef enum Dlt645Read_2007{
     Dlt645_Read_L,                   //数据长度 9 
     Dlt645_Read_ID0,                 //标识0    10
     Dlt645_Read_ID1,                 //标识1     11
-		Dlt645_Read_ID2,                 //标识2     12
+	Dlt645_Read_ID2,                 //标识2     12
     Dlt645_Read_ID3,                 //标识3     13
     Dlt645_Read_CS,                  //校验      14
     Dlt645_Read_16                   //结束,位置=13，从0起   15
@@ -76,31 +76,13 @@ unsigned char Mt_645_2007_V_cmd[16]={0x68,0xAA,0xAA,0xAA,0xAA,0xAA,0xAA,0x68,0x1
 //const unsigned char Mt_645_2007_C_RATIO_SET_cmd[16]={0x68,0xAA,0xAA,0xAA,0xAA,0xAA,0xAA,0x68,0x14,0x04,0x01,0x01,0x00,0x04,0x00,0x16};//最大电流比值 XXXX.XX 3字节BCD---电流变比？
 
 
-/*字符串大小比较，比较最大个数为 int 型
-//从后向前比较
-//输入：两个字符串地址*s1 ,*s2；
-//返回：== 0 相等；== -1 s1 < s2；== 1 s1 > s2：
---------------------------------------*/
-static signed char	StringCompareConverse(unsigned char *su1, unsigned char *su2, unsigned int n) 
-{
-	su1 += (n-1);
-	su2 += (n-1);
-	for (; 0 < n; --su1, --su2, --n){
-		if (*su1 != *su2){
-			return (*su1 < *su2 ? -1 : +1);
-		}
-	}
-
-	return (0);
-}
-
 
 /*********************************************************
-函数原形：void AddSun0x33(char * P, char len, char Cost)
+函数原形：void AddSub0x33(char * P, char len, char Cost)
 功    能：+33h或者-33h //cost=1=+33,其它=-33
 Cost=1=+33,其它=-33
 **********************************************************/
-static void AddSun0x33(unsigned char * P, unsigned char len, unsigned char Cost)
+static void AddSub0x33(unsigned char * P, unsigned char len, unsigned char Cost)
 {
 	unsigned char i;
 
@@ -125,8 +107,91 @@ static unsigned char Meter_645_cs(unsigned char *p, int L)
 
 	return c;
 }
+
+//读总电量--标志协议读出的为两位小数
+static int All_kwh_read(unsigned int *meter_now_All_KWH, int fd, unsigned char *addr,int gun_id,int DIR_Ctl_io)
+{
+    int i=0,j=0,start_flag=0;
+    int Count,status;
+
+    unsigned char SentBuf[255];
+    unsigned char recvBuf[255];
+ 
+	SentBuf[0] = 0xFE;
+	SentBuf[1] = 0xFE;
+	SentBuf[2] = 0xFE;
+	SentBuf[3] = 0xFE;
+	Mt_645_2007_All_Electricity_cmd[Dlt645_Read_SrcAddr + 0] = str2_to_BCD(&addr[10]); //A0
+	Mt_645_2007_All_Electricity_cmd[Dlt645_Read_SrcAddr + 1] = str2_to_BCD(&addr[8]); //A1
+	Mt_645_2007_All_Electricity_cmd[Dlt645_Read_SrcAddr + 2] = str2_to_BCD(&addr[6]); //A2
+	Mt_645_2007_All_Electricity_cmd[Dlt645_Read_SrcAddr + 3] = str2_to_BCD(&addr[4]); //A3
+	Mt_645_2007_All_Electricity_cmd[Dlt645_Read_SrcAddr + 4] = str2_to_BCD(&addr[2]); //A4
+	Mt_645_2007_All_Electricity_cmd[Dlt645_Read_SrcAddr + 5] = str2_to_BCD(&addr[0]); //A5
+	Mt_645_2007_All_Electricity_cmd[Dlt645_Read_ID0] = 0x00;
+	Mt_645_2007_All_Electricity_cmd[Dlt645_Read_ID1] = 0x00;
+	Mt_645_2007_All_Electricity_cmd[Dlt645_Read_ID2] = 0x01;
+	Mt_645_2007_All_Electricity_cmd[Dlt645_Read_ID3] = 0x00;
+	AddSub0x33(&Mt_645_2007_All_Electricity_cmd[Dlt645_Read_ID0], Mt_645_2007_All_Electricity_cmd[Dlt645_Read_L], 1);//+33处理  Cost=1=+33,其它=-33
+	Mt_645_2007_All_Electricity_cmd[Dlt645_Read_CS] = Meter_645_cs(Mt_645_2007_All_Electricity_cmd,(sizeof(Mt_645_2007_All_Electricity_cmd)-2));	
+	memcpy(&SentBuf[4], Mt_645_2007_All_Electricity_cmd, sizeof(Mt_645_2007_All_Electricity_cmd));//复制表地址								
+	
+	Led_Relay_Control(DIR_Ctl_io, COM_RS485_TX_LEVEL);
+	write(fd, SentBuf, sizeof(Mt_645_2007_All_Electricity_cmd) + 4);
+	do{
+		ioctl(fd, TIOCSERGETLSR, &status);
+	} while (status!=TIOCSER_TEMT);
+	usleep(5000);
+	Led_Relay_Control(DIR_Ctl_io, COM_RS485_RX_LEVEL);
+	Globa->dc_meter_tx_cnt[gun_id]++;
+	Count = read_datas_tty(fd, recvBuf, 255, 1000000, 300000);
+    if(Count >= (sizeof(Mt_645_2007_All_Electricity_cmd)+4))
+	{//响应可能没有0xfe引导码  +4个字节数据
+		// for(i=0;i<Count;i++)
+			// printf("%02x ",recvBuf[i]);
+		// printf("\n\n");
+		
+		for(i=0;i<5;i++)
+		{
+			if(recvBuf[i] == 0x68){
+				start_flag = i;
+				break;
+			}
+		}
+
+		if(i > 4){
+			return (-1);
+		}
+
+		if((Count-start_flag) != (sizeof(Mt_645_2007_All_Electricity_cmd)+4))
+		{
+			return (-1);
+		}
+
+		if((Meter_645_cs(&recvBuf[start_flag], Count-start_flag-2)) == recvBuf[Count-2])
+		{
+			if((recvBuf[start_flag] == 0x68)&&(recvBuf[Count-1] == 0x16))
+			{//起始符，结束符正确				
+				AddSub0x33(&recvBuf[start_flag + Dlt645_Read_ID0], 8, 2);//减33h       Cost=1=+33,其它=-33	
+				if((recvBuf[start_flag+Dlt645_Read_ID0] == 0x00)&&(recvBuf[start_flag+Dlt645_Read_ID1] == 0x00)&&(recvBuf[start_flag+Dlt645_Read_ID2] == 0x01)&&(recvBuf[start_flag+Dlt645_Read_ID3] == 0x00))
+				{//标识符正确
+
+					*meter_now_All_KWH = (bcd_to_int_1byte(recvBuf[start_flag + Dlt645_Read_ID3 + 4])*1000000 + \
+					                 bcd_to_int_1byte(recvBuf[start_flag + Dlt645_Read_ID3 + 3])*10000 + \
+					                 bcd_to_int_1byte(recvBuf[start_flag + Dlt645_Read_ID3 + 2])*100 + \
+					                 bcd_to_int_1byte(recvBuf[start_flag + Dlt645_Read_ID3 + 1]));
+													 
+					Globa->dc_meter_rx_ok_cnt[gun_id]++;
+					return (0);//抄收数据正确
+				}
+			}
+		}
+	}
+	//printf("All_kwh_read Count=%02d\n",Count);
+	return (-1);
+}
+
 //读总电量--根据雅达电表自定义的3位小数，
-static int All_kwh_read_New(unsigned int *meter_now_All_KWH, int fd, unsigned char *addr)
+static int All_kwh_read_New(unsigned int *meter_now_All_KWH, int fd, unsigned char *addr,int gun_id,int DIR_Ctl_io)
 {
     int i=0,j=0,start_flag=0;
     int Count,status;
@@ -148,17 +213,18 @@ static int All_kwh_read_New(unsigned int *meter_now_All_KWH, int fd, unsigned ch
 		Mt_645_2007_All_Electricity_cmd[Dlt645_Read_ID1] = 0x00;
 		Mt_645_2007_All_Electricity_cmd[Dlt645_Read_ID2] = 0xD1; //当前正向有功总电能
 		Mt_645_2007_All_Electricity_cmd[Dlt645_Read_ID3] = 0x00;
-		AddSun0x33(&Mt_645_2007_All_Electricity_cmd[Dlt645_Read_ID0], Mt_645_2007_All_Electricity_cmd[Dlt645_Read_L], 1);//+33处理  Cost=1=+33,其它=-33
+		AddSub0x33(&Mt_645_2007_All_Electricity_cmd[Dlt645_Read_ID0], Mt_645_2007_All_Electricity_cmd[Dlt645_Read_L], 1);//+33处理  Cost=1=+33,其它=-33
 		Mt_645_2007_All_Electricity_cmd[Dlt645_Read_CS] = Meter_645_cs(Mt_645_2007_All_Electricity_cmd,(sizeof(Mt_645_2007_All_Electricity_cmd)-2));	
 		memcpy(&SentBuf[4], Mt_645_2007_All_Electricity_cmd, sizeof(Mt_645_2007_All_Electricity_cmd));//复制表地址								
 		
-		Led_Relay_Control(6, 0);
+		Led_Relay_Control(DIR_Ctl_io, COM_RS485_TX_LEVEL);
 		write(fd, SentBuf, sizeof(Mt_645_2007_All_Electricity_cmd) + 4);
 		do{
 			ioctl(fd, TIOCSERGETLSR, &status);
 		} while (status!=TIOCSER_TEMT);
 		usleep(5000);
-		Led_Relay_Control(6, 1);
+		Led_Relay_Control(DIR_Ctl_io, COM_RS485_RX_LEVEL);
+		Globa->dc_meter_tx_cnt[gun_id]++;
 		Count = read_datas_tty(fd, recvBuf, 255, 1000000, 300000);
 		if(Count >= (sizeof(Mt_645_2007_All_Electricity_cmd)+4))
 		{
@@ -183,7 +249,7 @@ static int All_kwh_read_New(unsigned int *meter_now_All_KWH, int fd, unsigned ch
 			{
 				if((recvBuf[start_flag] == 0x68)&&(recvBuf[Count-1] == 0x16))
 				{//起始符，结束符正确				
-					AddSun0x33(&recvBuf[start_flag + Dlt645_Read_ID0], 8, 2);//减33h       Cost=1=+33,其它=-33	
+					AddSub0x33(&recvBuf[start_flag + Dlt645_Read_ID0], 8, 2);//减33h       Cost=1=+33,其它=-33	
 					for(i=0;i<8;i++)
 					{
 						printf("---recvBuf[start_flag + Dlt645_Read_ID0 + i] =%0x \n",recvBuf[start_flag + Dlt645_Read_ID0 + i]);
@@ -192,8 +258,9 @@ static int All_kwh_read_New(unsigned int *meter_now_All_KWH, int fd, unsigned ch
 					if((recvBuf[start_flag+Dlt645_Read_ID0] == 0x00)&&(recvBuf[start_flag+Dlt645_Read_ID1] == 0x00)&&(recvBuf[start_flag+Dlt645_Read_ID2] == 0xD1)&&(recvBuf[start_flag+Dlt645_Read_ID3] == 0x00))
 					{//标识符正确
 
-						*meter_now_All_KWH = (((recvBuf[start_flag + Dlt645_Read_ID3 + 4])<<24)|((recvBuf[start_flag + Dlt645_Read_ID3 + 3])<<16)|((recvBuf[start_flag + Dlt645_Read_ID3 + 2])<<8)|(recvBuf[start_flag + Dlt645_Read_ID3 + 1]))/10;
+						*meter_now_All_KWH = (((recvBuf[start_flag + Dlt645_Read_ID3 + 4])<<24)|((recvBuf[start_flag + Dlt645_Read_ID3 + 3])<<16)|((recvBuf[start_flag + Dlt645_Read_ID3 + 2])<<8)|(recvBuf[start_flag + Dlt645_Read_ID3 + 1]));
 														 
+						Globa->dc_meter_rx_ok_cnt[gun_id]++;
 						return (0);//抄收数据正确
 					}
 				}
@@ -202,564 +269,181 @@ static int All_kwh_read_New(unsigned int *meter_now_All_KWH, int fd, unsigned ch
 		//printf("All_kwh_read Count=%02d\n",Count);
 		return (-1);
 }
-//读总电量
-static int All_kwh_read(UINT32 *meter_now_All_KWH, int fd, unsigned char *addr)
-{
-	int i=0,j=0,start_flag=0;
-	int Count,status;
 
-	unsigned char SentBuf[MAX_MODBUS_FRAMESIZE];
-	unsigned char recvBuf[MAX_MODBUS_FRAMESIZE];
- 
-	SentBuf[0] = 0xFE;
-	SentBuf[1] = 0xFE;
-	SentBuf[2] = 0xFE;
-	SentBuf[3] = 0xFE;
-  Mt_645_2007_All_Electricity_cmd[Dlt645_Read_SrcAddr + 0] = str2_to_BCD(&addr[10]); //A0
-  Mt_645_2007_All_Electricity_cmd[Dlt645_Read_SrcAddr + 1] = str2_to_BCD(&addr[8]); //A1
-  Mt_645_2007_All_Electricity_cmd[Dlt645_Read_SrcAddr + 2] = str2_to_BCD(&addr[6]); //A2
-  Mt_645_2007_All_Electricity_cmd[Dlt645_Read_SrcAddr + 3] = str2_to_BCD(&addr[4]); //A3
-  Mt_645_2007_All_Electricity_cmd[Dlt645_Read_SrcAddr + 4] = str2_to_BCD(&addr[2]); //A4
-  Mt_645_2007_All_Electricity_cmd[Dlt645_Read_SrcAddr + 5] = str2_to_BCD(&addr[0]); //A5
-  Mt_645_2007_All_Electricity_cmd[Dlt645_Read_ID0] = 0x00;
-  Mt_645_2007_All_Electricity_cmd[Dlt645_Read_ID1] = 0x00;
-  Mt_645_2007_All_Electricity_cmd[Dlt645_Read_ID2] = 0x01;
-  Mt_645_2007_All_Electricity_cmd[Dlt645_Read_ID3] = 0x00;
-	AddSun0x33(&Mt_645_2007_All_Electricity_cmd[Dlt645_Read_ID0], Mt_645_2007_All_Electricity_cmd[Dlt645_Read_L], 1);//+33处理  Cost=1=+33,其它=-33
-  Mt_645_2007_All_Electricity_cmd[Dlt645_Read_CS] = Meter_645_cs(&Mt_645_2007_All_Electricity_cmd,(sizeof(Mt_645_2007_All_Electricity_cmd)-2));	
-	memcpy(&SentBuf[4], Mt_645_2007_All_Electricity_cmd, sizeof(Mt_645_2007_All_Electricity_cmd));//复制表地址								
+
+
+//读电表电压 0.01V
+static int Volt_read(unsigned int *Output_voltage, int fd, unsigned char *addr,int gun_id,int DIR_Ctl_io)
+{
+    int i=0,j=0,start_flag=0;
+    int Count,status;
+	  unsigned char READ_DI3 = 0x02;
+	  unsigned char READ_DI2 = 0x00;
+	  unsigned char READ_DI1 = 0x02;
+	  unsigned char READ_DI0 = 0x00;
+	  int rd_data_len;//电表响应报文中的长度域的值
+	  unsigned char expected_data_bytes = 4;//电表返回的有效数据字节数
+    unsigned char SentBuf[255];
+    unsigned char recvBuf[255];
+
+    SentBuf[0] = 0xFE;
+    SentBuf[1] = 0xFE;
+    SentBuf[2] = 0xFE;
+    SentBuf[3] = 0xFE;
+    Mt_645_2007_V_cmd[Dlt645_Read_SrcAddr + 0] = str2_to_BCD(&addr[10]); //A0
+    Mt_645_2007_V_cmd[Dlt645_Read_SrcAddr + 1] = str2_to_BCD(&addr[8]); //A1
+    Mt_645_2007_V_cmd[Dlt645_Read_SrcAddr + 2] = str2_to_BCD(&addr[6]); //A2
+    Mt_645_2007_V_cmd[Dlt645_Read_SrcAddr + 3] = str2_to_BCD(&addr[4]); //A3
+    Mt_645_2007_V_cmd[Dlt645_Read_SrcAddr + 4] = str2_to_BCD(&addr[2]); //A4
+    Mt_645_2007_V_cmd[Dlt645_Read_SrcAddr + 5] = str2_to_BCD(&addr[0]); //A5
+
+    Mt_645_2007_V_cmd[Dlt645_Read_ID0] = READ_DI0;
+    Mt_645_2007_V_cmd[Dlt645_Read_ID1] = READ_DI1;
+    Mt_645_2007_V_cmd[Dlt645_Read_ID2] = READ_DI2;
+    Mt_645_2007_V_cmd[Dlt645_Read_ID3] = READ_DI3;
+
+    AddSub0x33(&Mt_645_2007_V_cmd[Dlt645_Read_ID0], Mt_645_2007_V_cmd[Dlt645_Read_L], 1);//+33处理  Cost=1=+33,其它=-33
+    Mt_645_2007_V_cmd[Dlt645_Read_CS] = Meter_645_cs((unsigned char *)&Mt_645_2007_V_cmd,(sizeof(Mt_645_2007_V_cmd)-2));
+    memcpy(&SentBuf[4], Mt_645_2007_V_cmd, sizeof(Mt_645_2007_V_cmd));//复制表地址
 	
-	Led_Relay_Control(6, 0);
-	write(fd, SentBuf, sizeof(Mt_645_2007_All_Electricity_cmd) + 4);
+	Led_Relay_Control(DIR_Ctl_io, COM_RS485_TX_LEVEL);
+    write(fd, SentBuf, sizeof(Mt_645_2007_V_cmd) + 4);
 	do{
 		ioctl(fd, TIOCSERGETLSR, &status);
 	} while (status!=TIOCSER_TEMT);
 	usleep(5000);
-	Led_Relay_Control(6, 1);
+	Led_Relay_Control(DIR_Ctl_io, COM_RS485_RX_LEVEL);
+	Globa->dc_meter_tx_cnt[gun_id]++;
+	Count = read_datas_tty(fd, recvBuf, 255, 1000000, 300000);
+    if(Count >= (sizeof(Mt_645_2007_V_cmd)+expected_data_bytes)){//响应可能没有0xfe引导码  +rd_data_len个字节数据
 
-	Count = read_datas_tty(fd, recvBuf, MAX_MODBUS_FRAMESIZE, 500000, 30000);
-  if(Count >= (sizeof(Mt_645_2007_All_Electricity_cmd)+4)){//响应可能没有0xfe引导码  +4个字节数据
-#if METER_645_DEBUG == 1
-			printf("kwh_read recv server length = %d,data= ", Count);
-			for(j=0; j<Count; j++)printf("%02x ",recvBuf[j]);
-			printf("\n");
-#endif
-  	for(i=0;i<5;i++){
-  		if(recvBuf[i] == 0x68){
-  			start_flag = i;
-  			break;
-  		}
-  	}
+        for(i=0;i<5;i++){
+            if(recvBuf[i] == 0x68){
+                start_flag = i;
+                break;
+            }
+        }
 
-  	if(i > 4){
-  		return (-1);
-  	}
+        if(i > 4){
+            return (-1);
+        }
 
-  	if((Count-start_flag) != (sizeof(Mt_645_2007_All_Electricity_cmd)+4)){
-  		return (-1);
-  	}
+        if((Count-start_flag) != (sizeof(Mt_645_2007_V_cmd)+expected_data_bytes)){
+            return (-1);
+        }
 
-		if((Meter_645_cs(&recvBuf[start_flag], Count-start_flag-2)) == recvBuf[Count-2]){
-			if((recvBuf[start_flag] == 0x68)&&(recvBuf[Count-1] == 0x16)){//起始符，结束符正确
-				AddSun0x33(&recvBuf[start_flag + Dlt645_Read_ID0], 8, 2);//减33h       Cost=1=+33,其它=-33	
-				if((recvBuf[start_flag+Dlt645_Read_ID0] == 0x00)&&(recvBuf[start_flag+Dlt645_Read_ID1] == 0x00)&&(recvBuf[start_flag+Dlt645_Read_ID2] == 0x01)&&(recvBuf[start_flag+Dlt645_Read_ID3] == 0x00)){//标识符正确
+        if((Meter_645_cs(&recvBuf[start_flag], Count-start_flag-2)) == recvBuf[Count-2]){
+            if((recvBuf[start_flag] == 0x68)&&(recvBuf[Count-1] == 0x16)){//起始符，结束符正确
+				rd_data_len = recvBuf[start_flag + Dlt645_Read_L];
+				if(rd_data_len ==  (4+expected_data_bytes) )//长度正确
+				{
+					AddSub0x33(&recvBuf[start_flag + Dlt645_Read_ID0], rd_data_len, 2);//减33h       Cost=1=+33,其它=-33
+					if((recvBuf[start_flag+Dlt645_Read_ID0] == READ_DI0)&&(recvBuf[start_flag+Dlt645_Read_ID1] == READ_DI1)&&(recvBuf[start_flag+Dlt645_Read_ID2] == READ_DI2)&&(recvBuf[start_flag+Dlt645_Read_ID3] == READ_DI3)){//标识符正确
 
-	       	*meter_now_All_KWH = (bcd_to_int_1byte(recvBuf[start_flag + Dlt645_Read_ID3 + 4])*1000000 + \
-					                 bcd_to_int_1byte(recvBuf[start_flag + Dlt645_Read_ID3 + 3])*10000 + \
-					                 bcd_to_int_1byte(recvBuf[start_flag + Dlt645_Read_ID3 + 2])*100 + \
-					                 bcd_to_int_1byte(recvBuf[start_flag + Dlt645_Read_ID3 + 1]));
-				// printf("MEter meter_now_All_KWH xxxxxxxxxxxxxxxxxxxxxx= %d KWH\n", *meter_now_All_KWH);
-								 
-					return (0);//抄收数据正确
+						*Output_voltage = (bcd_to_int_1byte(recvBuf[start_flag + Dlt645_Read_ID3 + 4]&0x7F)*1000000 + \
+								bcd_to_int_1byte(recvBuf[start_flag + Dlt645_Read_ID3 + 3])*10000 + \
+								bcd_to_int_1byte(recvBuf[start_flag + Dlt645_Read_ID3 + 2])*100 + \
+								bcd_to_int_1byte(recvBuf[start_flag + Dlt645_Read_ID3 + 1]));
+
+						Globa->dc_meter_rx_ok_cnt[gun_id]++;	
+						return (0);//抄收数据正确
+					}
 				}
-			}
-		}
-	}
+            }
+        }
+    }
 
-	return (-1);
+    return (-1);
 }
 
-//读电表的尖电量
-static int Tip_kwh_read(UINT32 *meter_now_Tip_KWH, int fd, unsigned char *addr)
+//读电表电流 0.0001A
+static int Curt_read(unsigned int *Output_current, int fd, unsigned char *addr,int gun_id,int DIR_Ctl_io)
 {
-	int i=0,j=0,start_flag=0;
-	int Count,status;
+    int i=0,j=0,start_flag=0;
+    int Count,status;
+	unsigned char READ_DI3 = 0x02;
+	unsigned char READ_DI2 = 0x00;
+	unsigned char READ_DI1 = 0x01;
+	unsigned char READ_DI0 = 0x00;
+	int rd_data_len;//电表响应报文中的长度域的值
+	unsigned char expected_data_bytes = 4;//电表返回的有效数据字节数
+    unsigned char SentBuf[255];
+    unsigned char recvBuf[255];
 
-	unsigned char SentBuf[MAX_MODBUS_FRAMESIZE];
-	unsigned char recvBuf[MAX_MODBUS_FRAMESIZE];
- 
-	SentBuf[0] = 0xFE;
-	SentBuf[1] = 0xFE;
-	SentBuf[2] = 0xFE;
-	SentBuf[3] = 0xFE;
-  Mt_645_2007_Tip_Electricity_cmd[Dlt645_Read_SrcAddr + 0] = str2_to_BCD(&addr[10]); //A0
-  Mt_645_2007_Tip_Electricity_cmd[Dlt645_Read_SrcAddr + 1] = str2_to_BCD(&addr[8]); //A1
-  Mt_645_2007_Tip_Electricity_cmd[Dlt645_Read_SrcAddr + 2] = str2_to_BCD(&addr[6]); //A2
-  Mt_645_2007_Tip_Electricity_cmd[Dlt645_Read_SrcAddr + 3] = str2_to_BCD(&addr[4]); //A3
-  Mt_645_2007_Tip_Electricity_cmd[Dlt645_Read_SrcAddr + 4] = str2_to_BCD(&addr[2]); //A4
-  Mt_645_2007_Tip_Electricity_cmd[Dlt645_Read_SrcAddr + 5] = str2_to_BCD(&addr[0]); //A5
-  
-	Mt_645_2007_Tip_Electricity_cmd[Dlt645_Read_ID0] = 0x00;
-  Mt_645_2007_Tip_Electricity_cmd[Dlt645_Read_ID1] = 0x01;
-  Mt_645_2007_Tip_Electricity_cmd[Dlt645_Read_ID2] = 0x01;
-  Mt_645_2007_Tip_Electricity_cmd[Dlt645_Read_ID3] = 0x00;
-	
-	AddSun0x33(&Mt_645_2007_Tip_Electricity_cmd[Dlt645_Read_ID0], Mt_645_2007_Tip_Electricity_cmd[Dlt645_Read_L], 1);//+33处理  Cost=1=+33,其它=-33
-  Mt_645_2007_Tip_Electricity_cmd[Dlt645_Read_CS] = Meter_645_cs(&Mt_645_2007_Tip_Electricity_cmd,(sizeof(Mt_645_2007_Tip_Electricity_cmd)-2));	
-	memcpy(&SentBuf[4], Mt_645_2007_Tip_Electricity_cmd, sizeof(Mt_645_2007_Tip_Electricity_cmd));//复制表地址								
-	
-	Led_Relay_Control(6, 0);
-	write(fd, SentBuf, sizeof(Mt_645_2007_Tip_Electricity_cmd) + 4);
-	do{
-		ioctl(fd, TIOCSERGETLSR, &status);
-	} while (status!=TIOCSER_TEMT);
-	usleep(5000);
-	Led_Relay_Control(6, 1);
+    SentBuf[0] = 0xFE;
+    SentBuf[1] = 0xFE;
+    SentBuf[2] = 0xFE;
+    SentBuf[3] = 0xFE;
+    Mt_645_2007_C_cmd[Dlt645_Read_SrcAddr + 0] = str2_to_BCD(&addr[10]); //A0
+    Mt_645_2007_C_cmd[Dlt645_Read_SrcAddr + 1] = str2_to_BCD(&addr[8]); //A1
+    Mt_645_2007_C_cmd[Dlt645_Read_SrcAddr + 2] = str2_to_BCD(&addr[6]); //A2
+    Mt_645_2007_C_cmd[Dlt645_Read_SrcAddr + 3] = str2_to_BCD(&addr[4]); //A3
+    Mt_645_2007_C_cmd[Dlt645_Read_SrcAddr + 4] = str2_to_BCD(&addr[2]); //A4
+    Mt_645_2007_C_cmd[Dlt645_Read_SrcAddr + 5] = str2_to_BCD(&addr[0]); //A5
 
-	Count = read_datas_tty(fd, recvBuf, MAX_MODBUS_FRAMESIZE, 500000, 30000);
-  if(Count >= (sizeof(Mt_645_2007_Tip_Electricity_cmd)+4)){//响应可能没有0xfe引导码  +4个字节数据
-#if METER_645_DEBUG == 1
-			printf("kwh_read recv server length = %d,data= ", Count);
-			for(j=0; j<Count; j++)printf("%02x ",recvBuf[j]);
-			printf("\n");
-#endif
-  	for(i=0;i<5;i++){
-  		if(recvBuf[i] == 0x68){
-  			start_flag = i;
-  			break;
-  		}
-  	}
+    Mt_645_2007_C_cmd[Dlt645_Read_ID0] = READ_DI0;
+    Mt_645_2007_C_cmd[Dlt645_Read_ID1] = READ_DI1;
+    Mt_645_2007_C_cmd[Dlt645_Read_ID2] = READ_DI2;
+    Mt_645_2007_C_cmd[Dlt645_Read_ID3] = READ_DI3;
 
-  	if(i > 4){
-  		return (-1);
-  	}
+    AddSub0x33(&Mt_645_2007_C_cmd[Dlt645_Read_ID0], Mt_645_2007_C_cmd[Dlt645_Read_L], 1);//+33处理  Cost=1=+33,其它=-33
+    Mt_645_2007_C_cmd[Dlt645_Read_CS] = Meter_645_cs((unsigned char *)&Mt_645_2007_C_cmd,(sizeof(Mt_645_2007_C_cmd)-2));
+    memcpy(&SentBuf[4], Mt_645_2007_C_cmd, sizeof(Mt_645_2007_C_cmd));//复制表地址
 
-  	if((Count-start_flag) != (sizeof(Mt_645_2007_Tip_Electricity_cmd)+4)){
-  		return (-1);
-  	}
-		
-		if((Meter_645_cs(&recvBuf[start_flag], Count-start_flag-2)) == recvBuf[Count-2]){
-			if((recvBuf[start_flag] == 0x68)&&(recvBuf[Count-1] == 0x16)){//起始符，结束符正确
-				AddSun0x33(&recvBuf[start_flag + Dlt645_Read_ID0], 8, 2);//减33h       Cost=1=+33,其它=-33														
-				if((recvBuf[start_flag+Dlt645_Read_ID0] == 0x00)&&(recvBuf[start_flag+Dlt645_Read_ID1] == 0x01)&&(recvBuf[start_flag+Dlt645_Read_ID2] == 0x01)&&(recvBuf[start_flag+Dlt645_Read_ID3] == 0x00)){//标识符正确
-
-	       	*meter_now_Tip_KWH = (bcd_to_int_1byte(recvBuf[start_flag + Dlt645_Read_ID3 + 4])*1000000 + \
-					                 bcd_to_int_1byte(recvBuf[start_flag + Dlt645_Read_ID3 + 3])*10000 + \
-					                 bcd_to_int_1byte(recvBuf[start_flag + Dlt645_Read_ID3 + 2])*100 + \
-					                 bcd_to_int_1byte(recvBuf[start_flag + Dlt645_Read_ID3 + 1]));
-													 
-			//printf("meter_now_KWH xxxxxxxxxxDCxxxxxxxxxxxx= %d \n", *meter_now_KWH);
-
-					return (0);//抄收数据正确
-				}
-			}
-		}
-	}
-
-	return (-1);
-}
-
-//读电表峰电量
-static int Peak_kwh_read(UINT32 *meter_now_Peak_KWH, int fd, unsigned char *addr)
-{
-	int i=0,j=0,start_flag=0;
-	int Count,status;
-
-	unsigned char SentBuf[MAX_MODBUS_FRAMESIZE];
-	unsigned char recvBuf[MAX_MODBUS_FRAMESIZE];
- 
-	SentBuf[0] = 0xFE;
-	SentBuf[1] = 0xFE;
-	SentBuf[2] = 0xFE;
-	SentBuf[3] = 0xFE;
-  Mt_645_2007_Peak_Electricity_cmd[Dlt645_Read_SrcAddr + 0] = str2_to_BCD(&addr[10]); //A0
-  Mt_645_2007_Peak_Electricity_cmd[Dlt645_Read_SrcAddr + 1] = str2_to_BCD(&addr[8]); //A1
-  Mt_645_2007_Peak_Electricity_cmd[Dlt645_Read_SrcAddr + 2] = str2_to_BCD(&addr[6]); //A2
-  Mt_645_2007_Peak_Electricity_cmd[Dlt645_Read_SrcAddr + 3] = str2_to_BCD(&addr[4]); //A3
-  Mt_645_2007_Peak_Electricity_cmd[Dlt645_Read_SrcAddr + 4] = str2_to_BCD(&addr[2]); //A4
-  Mt_645_2007_Peak_Electricity_cmd[Dlt645_Read_SrcAddr + 5] = str2_to_BCD(&addr[0]); //A5
-	
-	Mt_645_2007_Peak_Electricity_cmd[Dlt645_Read_ID0] = 0x00;
-  Mt_645_2007_Peak_Electricity_cmd[Dlt645_Read_ID1] = 0x02;
-  Mt_645_2007_Peak_Electricity_cmd[Dlt645_Read_ID2] = 0x01;
-  Mt_645_2007_Peak_Electricity_cmd[Dlt645_Read_ID3] = 0x00;
-	
-	AddSun0x33(&Mt_645_2007_Peak_Electricity_cmd[Dlt645_Read_ID0], Mt_645_2007_Peak_Electricity_cmd[Dlt645_Read_L], 1);//+33处理  Cost=1=+33,其它=-33
-  Mt_645_2007_Peak_Electricity_cmd[Dlt645_Read_CS] = Meter_645_cs(&Mt_645_2007_Peak_Electricity_cmd,(sizeof(Mt_645_2007_Peak_Electricity_cmd)-2));	
-	memcpy(&SentBuf[4], Mt_645_2007_Peak_Electricity_cmd, sizeof(Mt_645_2007_Peak_Electricity_cmd));//复制表地址								
-	
-	Led_Relay_Control(6, 0);
-	write(fd, SentBuf, sizeof(Mt_645_2007_Peak_Electricity_cmd) + 4);
-	do{
-		ioctl(fd, TIOCSERGETLSR, &status);
-	} while (status!=TIOCSER_TEMT);
-	usleep(5000);
-	Led_Relay_Control(6, 1);
-
-	Count = read_datas_tty(fd, recvBuf, MAX_MODBUS_FRAMESIZE, 500000, 30000);
-  if(Count >= (sizeof(Mt_645_2007_Peak_Electricity_cmd)+4)){//响应可能没有0xfe引导码  +4个字节数据
-#if METER_645_DEBUG == 1
-			printf("kwh_read recv server length = %d,data= ", Count);
-			for(j=0; j<Count; j++)printf("%02x ",recvBuf[j]);
-			printf("\n");
-#endif
-  	for(i=0;i<5;i++){
-  		if(recvBuf[i] == 0x68){
-  			start_flag = i;
-  			break;
-  		}
-  	}
-
-  	if(i > 4){
-  		return (-1);
-  	}
-
-  	if((Count-start_flag) != (sizeof(Mt_645_2007_Peak_Electricity_cmd)+4)){
-  		return (-1);
-  	}
-		
-		if((Meter_645_cs(&recvBuf[start_flag], Count-start_flag-2)) == recvBuf[Count-2]){
-			if((recvBuf[start_flag] == 0x68)&&(recvBuf[Count-1] == 0x16)){//起始符，结束符正确
-				AddSun0x33(&recvBuf[start_flag + Dlt645_Read_ID0], 8, 2);//减33h       Cost=1=+33,其它=-33														
-				if((recvBuf[start_flag+Dlt645_Read_ID0] == 0x00)&&(recvBuf[start_flag+Dlt645_Read_ID1] == 0x02)&&(recvBuf[start_flag+Dlt645_Read_ID2] == 0x01)&&(recvBuf[start_flag+Dlt645_Read_ID3] == 0x00)){//标识符正确
-
-	       	*meter_now_Peak_KWH = (bcd_to_int_1byte(recvBuf[start_flag + Dlt645_Read_ID3 + 4])*1000000 + \
-					                 bcd_to_int_1byte(recvBuf[start_flag + Dlt645_Read_ID3 + 3])*10000 + \
-					                 bcd_to_int_1byte(recvBuf[start_flag + Dlt645_Read_ID3 + 2])*100 + \
-					                 bcd_to_int_1byte(recvBuf[start_flag + Dlt645_Read_ID3 + 1]));
-													 
-//			printf("meter_now_Peak_KWH xxxxxxxxxxxxxxxxxxxxxx= %d \n", *meter_now_Peak_KWH);
-
-					return (0);//抄收数据正确
-				}
-			}
-		}
-	}
-
-	return (-1);
-}
-
-//读电表平电量
-static int Flat_kwh_read(UINT32 *meter_now_Flat_KWH, int fd, unsigned char *addr)
-{
-	int i=0,j=0,start_flag=0;
-	int Count,status;
-
-	unsigned char SentBuf[MAX_MODBUS_FRAMESIZE];
-	unsigned char recvBuf[MAX_MODBUS_FRAMESIZE];
- 
-	SentBuf[0] = 0xFE;
-	SentBuf[1] = 0xFE;
-	SentBuf[2] = 0xFE;
-	SentBuf[3] = 0xFE;
-  Mt_645_2007_Flat_Electricity_cmd[Dlt645_Read_SrcAddr + 0] = str2_to_BCD(&addr[10]); //A0
-  Mt_645_2007_Flat_Electricity_cmd[Dlt645_Read_SrcAddr + 1] = str2_to_BCD(&addr[8]); //A1
-  Mt_645_2007_Flat_Electricity_cmd[Dlt645_Read_SrcAddr + 2] = str2_to_BCD(&addr[6]); //A2
-  Mt_645_2007_Flat_Electricity_cmd[Dlt645_Read_SrcAddr + 3] = str2_to_BCD(&addr[4]); //A3
-  Mt_645_2007_Flat_Electricity_cmd[Dlt645_Read_SrcAddr + 4] = str2_to_BCD(&addr[2]); //A4
-  Mt_645_2007_Flat_Electricity_cmd[Dlt645_Read_SrcAddr + 5] = str2_to_BCD(&addr[0]); //A5
-	
-	Mt_645_2007_Flat_Electricity_cmd[Dlt645_Read_ID0] = 0x00;
-  Mt_645_2007_Flat_Electricity_cmd[Dlt645_Read_ID1] = 0x03;
-  Mt_645_2007_Flat_Electricity_cmd[Dlt645_Read_ID2] = 0x01;
-  Mt_645_2007_Flat_Electricity_cmd[Dlt645_Read_ID3] = 0x00;
-	
-	AddSun0x33(&Mt_645_2007_Flat_Electricity_cmd[Dlt645_Read_ID0], Mt_645_2007_Flat_Electricity_cmd[Dlt645_Read_L], 1);//+33处理  Cost=1=+33,其它=-33
-  Mt_645_2007_Flat_Electricity_cmd[Dlt645_Read_CS] = Meter_645_cs(&Mt_645_2007_Flat_Electricity_cmd,(sizeof(Mt_645_2007_Flat_Electricity_cmd)-2));	
-	memcpy(&SentBuf[4], Mt_645_2007_Flat_Electricity_cmd, sizeof(Mt_645_2007_Flat_Electricity_cmd));//复制表地址								
-	
-	Led_Relay_Control(6, 0);
-	write(fd, SentBuf, sizeof(Mt_645_2007_Flat_Electricity_cmd) + 4);
-	do{
-		ioctl(fd, TIOCSERGETLSR, &status);
-	} while (status!=TIOCSER_TEMT);
-	usleep(5000);
-	Led_Relay_Control(6, 1);
-
-	Count = read_datas_tty(fd, recvBuf, MAX_MODBUS_FRAMESIZE, 500000, 30000);
-  if(Count >= (sizeof(Mt_645_2007_Flat_Electricity_cmd)+4)){//响应可能没有0xfe引导码  +4个字节数据
-#if METER_645_DEBUG == 1
-			printf("kwh_read recv server length = %d,data= ", Count);
-			for(j=0; j<Count; j++)printf("%02x ",recvBuf[j]);
-			printf("\n");
-#endif
-  	for(i=0;i<5;i++){
-  		if(recvBuf[i] == 0x68){
-  			start_flag = i;
-  			break;
-  		}
-  	}
-
-  	if(i > 4){
-  		return (-1);
-  	}
-
-  	if((Count-start_flag) != (sizeof(Mt_645_2007_Flat_Electricity_cmd)+4)){
-  		return (-1);
-  	}
-		
-		if((Meter_645_cs(&recvBuf[start_flag], Count-start_flag-2)) == recvBuf[Count-2]){
-			if((recvBuf[start_flag] == 0x68)&&(recvBuf[Count-1] == 0x16)){//起始符，结束符正确
-				AddSun0x33(&recvBuf[start_flag + Dlt645_Read_ID0], 8, 2);//减33h       Cost=1=+33,其它=-33														
-				if((recvBuf[start_flag+Dlt645_Read_ID0] == 0x00)&&(recvBuf[start_flag+Dlt645_Read_ID1] == 0x03)&&(recvBuf[start_flag+Dlt645_Read_ID2] == 0x01)&&(recvBuf[start_flag+Dlt645_Read_ID3] == 0x00)){//标识符正确
-
-	       	*meter_now_Flat_KWH = (bcd_to_int_1byte(recvBuf[start_flag + Dlt645_Read_ID3 + 4])*1000000 + \
-					                 bcd_to_int_1byte(recvBuf[start_flag + Dlt645_Read_ID3 + 3])*10000 + \
-					                 bcd_to_int_1byte(recvBuf[start_flag + Dlt645_Read_ID3 + 2])*100 + \
-					                 bcd_to_int_1byte(recvBuf[start_flag + Dlt645_Read_ID3 + 1]));
-													 
-//			printf("meter_now_Flat_KWH xxxxxxxxxxxxxxxxxxxxxx= %d \n", *meter_now_Flat_KWH);
-
-					return (0);//抄收数据正确
-				}
-			}
-		}
-	}
-
-	return (-1);
-}
-
-//读电表谷电量
-static int Valley_kwh_read(UINT32 *meter_now_Valley_KWH, int fd, unsigned char *addr)
-{
-	int i=0,j=0,start_flag=0;
-	int Count,status;
-
-	unsigned char SentBuf[MAX_MODBUS_FRAMESIZE];
-	unsigned char recvBuf[MAX_MODBUS_FRAMESIZE];
- 
-	SentBuf[0] = 0xFE;
-	SentBuf[1] = 0xFE;
-	SentBuf[2] = 0xFE;
-	SentBuf[3] = 0xFE;
-  Mt_645_2007_Valley_Electricity_cmd[Dlt645_Read_SrcAddr + 0] = str2_to_BCD(&addr[10]); //A0
-  Mt_645_2007_Valley_Electricity_cmd[Dlt645_Read_SrcAddr + 1] = str2_to_BCD(&addr[8]); //A1
-  Mt_645_2007_Valley_Electricity_cmd[Dlt645_Read_SrcAddr + 2] = str2_to_BCD(&addr[6]); //A2
-  Mt_645_2007_Valley_Electricity_cmd[Dlt645_Read_SrcAddr + 3] = str2_to_BCD(&addr[4]); //A3
-  Mt_645_2007_Valley_Electricity_cmd[Dlt645_Read_SrcAddr + 4] = str2_to_BCD(&addr[2]); //A4
-  Mt_645_2007_Valley_Electricity_cmd[Dlt645_Read_SrcAddr + 5] = str2_to_BCD(&addr[0]); //A5
-	
-	Mt_645_2007_Valley_Electricity_cmd[Dlt645_Read_ID0] = 0x00;
-  Mt_645_2007_Valley_Electricity_cmd[Dlt645_Read_ID1] = 0x04;
-  Mt_645_2007_Valley_Electricity_cmd[Dlt645_Read_ID2] = 0x01;
-  Mt_645_2007_Valley_Electricity_cmd[Dlt645_Read_ID3] = 0x00;
-	
-	AddSun0x33(&Mt_645_2007_Valley_Electricity_cmd[Dlt645_Read_ID0], Mt_645_2007_Valley_Electricity_cmd[Dlt645_Read_L], 1);//+33处理  Cost=1=+33,其它=-33
-  Mt_645_2007_Valley_Electricity_cmd[Dlt645_Read_CS] = Meter_645_cs(&Mt_645_2007_Valley_Electricity_cmd,(sizeof(Mt_645_2007_Valley_Electricity_cmd)-2));	
-	memcpy(&SentBuf[4], Mt_645_2007_Valley_Electricity_cmd, sizeof(Mt_645_2007_Valley_Electricity_cmd));//复制表地址								
-	
-	Led_Relay_Control(6, 0);
-	write(fd, SentBuf, sizeof(Mt_645_2007_Valley_Electricity_cmd) + 4);
-	do{
-		ioctl(fd, TIOCSERGETLSR, &status);
-	} while (status!=TIOCSER_TEMT);
-	usleep(5000);
-	Led_Relay_Control(6, 1);
-
-	Count = read_datas_tty(fd, recvBuf, MAX_MODBUS_FRAMESIZE, 500000, 30000);
-  if(Count >= (sizeof(Mt_645_2007_Valley_Electricity_cmd)+4)){//响应可能没有0xfe引导码  +4个字节数据
-#if METER_645_DEBUG == 1
-			printf("kwh_read recv server length = %d,data= ", Count);
-			for(j=0; j<Count; j++)printf("%02x ",recvBuf[j]);
-			printf("\n");
-#endif
-  	for(i=0;i<5;i++){
-  		if(recvBuf[i] == 0x68){
-  			start_flag = i;
-  			break;
-  		}
-  	}
-
-  	if(i > 4){
-  		return (-1);
-  	}
-
-  	if((Count-start_flag) != (sizeof(Mt_645_2007_Valley_Electricity_cmd)+4)){
-  		return (-1);
-  	}
-		
-		if((Meter_645_cs(&recvBuf[start_flag], Count-start_flag-2)) == recvBuf[Count-2]){
-			if((recvBuf[start_flag] == 0x68)&&(recvBuf[Count-1] == 0x16)){//起始符，结束符正确
-				AddSun0x33(&recvBuf[start_flag + Dlt645_Read_ID0], 8, 2);//减33h       Cost=1=+33,其它=-33														
-				if((recvBuf[start_flag+Dlt645_Read_ID0] == 0x00)&&(recvBuf[start_flag+Dlt645_Read_ID1] == 0x04)&&(recvBuf[start_flag+Dlt645_Read_ID2] == 0x01)&&(recvBuf[start_flag+Dlt645_Read_ID3] == 0x00)){//标识符正确
-
-	       	*meter_now_Valley_KWH = (bcd_to_int_1byte(recvBuf[start_flag + Dlt645_Read_ID3 + 4])*1000000 + \
-					                 bcd_to_int_1byte(recvBuf[start_flag + Dlt645_Read_ID3 + 3])*10000 + \
-					                 bcd_to_int_1byte(recvBuf[start_flag + Dlt645_Read_ID3 + 2])*100 + \
-					                 bcd_to_int_1byte(recvBuf[start_flag + Dlt645_Read_ID3 + 1]));
-													 
-//			printf("meter_now_Valley_KWH xxxxxxxxxxxxxxxxxxxxxx= %d \n", *meter_now_Valley_KWH);
-
-					return (0);//抄收数据正确
-				}
-			}
-		}
-	}
-
-	return (-1);
-}
-
-
-//读电表电压 
-static int Volt_read(UINT32 *Output_voltage, int fd, unsigned char *addr)
-{
-	int i=0,j=0,start_flag=0;
-	int Count,status;
-
-	unsigned char SentBuf[MAX_MODBUS_FRAMESIZE];
-	unsigned char recvBuf[MAX_MODBUS_FRAMESIZE];
- 
-	SentBuf[0] = 0xFE;
-	SentBuf[1] = 0xFE;
-	SentBuf[2] = 0xFE;
-	SentBuf[3] = 0xFE;
-  Mt_645_2007_V_cmd[Dlt645_Read_SrcAddr + 0] = str2_to_BCD(&addr[10]); //A0
-  Mt_645_2007_V_cmd[Dlt645_Read_SrcAddr + 1] = str2_to_BCD(&addr[8]); //A1
-  Mt_645_2007_V_cmd[Dlt645_Read_SrcAddr + 2] = str2_to_BCD(&addr[6]); //A2
-  Mt_645_2007_V_cmd[Dlt645_Read_SrcAddr + 3] = str2_to_BCD(&addr[4]); //A3
-  Mt_645_2007_V_cmd[Dlt645_Read_SrcAddr + 4] = str2_to_BCD(&addr[2]); //A4
-  Mt_645_2007_V_cmd[Dlt645_Read_SrcAddr + 5] = str2_to_BCD(&addr[0]); //A5
-	  
-	Mt_645_2007_V_cmd[Dlt645_Read_ID0] = 0x00;
-  Mt_645_2007_V_cmd[Dlt645_Read_ID1] = 0x02;
-  Mt_645_2007_V_cmd[Dlt645_Read_ID2] = 0x00;
-  Mt_645_2007_V_cmd[Dlt645_Read_ID3] = 0x02;
-	
-	AddSun0x33(&Mt_645_2007_V_cmd[Dlt645_Read_ID0], Mt_645_2007_V_cmd[Dlt645_Read_L], 1);//+33处理  Cost=1=+33,其它=-33
-  Mt_645_2007_V_cmd[Dlt645_Read_CS] = Meter_645_cs(&Mt_645_2007_V_cmd,(sizeof(Mt_645_2007_V_cmd)-2));	
-	memcpy(&SentBuf[4], Mt_645_2007_V_cmd, sizeof(Mt_645_2007_V_cmd));//复制表地址								
-	
-	Led_Relay_Control(6, 0);
-	write(fd, SentBuf, sizeof(Mt_645_2007_V_cmd) + 4);
-	do{
-		ioctl(fd, TIOCSERGETLSR, &status);
-	} while (status!=TIOCSER_TEMT);
-	usleep(5000);
-	Led_Relay_Control(6, 1);
-
-	Count = read_datas_tty(fd, recvBuf, MAX_MODBUS_FRAMESIZE, 500000, 30000);
-  if(Count >= (sizeof(Mt_645_2007_V_cmd)+4)){//响应可能没有0xfe引导码  +4个字节数据
-#if METER_645_DEBUG == 1
-			printf("kwh_read recv server length = %d,data= ", Count);
-			for(j=0; j<Count; j++)printf("%02x ",recvBuf[j]);
-			printf("\n");
-#endif
-  	for(i=0;i<5;i++){
-  		if(recvBuf[i] == 0x68){
-  			start_flag = i;
-  			break;
-  		}
-  	}
-
-  	if(i > 4){
-  		return (-1);
-  	}
-
-  	if((Count-start_flag) != (sizeof(Mt_645_2007_V_cmd)+4)){
-  		return (-1);
-  	}
-		
-		if((Meter_645_cs(&recvBuf[start_flag], Count-start_flag-2)) == recvBuf[Count-2]){
-			if((recvBuf[start_flag] == 0x68)&&(recvBuf[Count-1] == 0x16)){//起始符，结束符正确
-				AddSun0x33(&recvBuf[start_flag + Dlt645_Read_ID0], 8, 2);//减33h       Cost=1=+33,其它=-33														
-				if((recvBuf[start_flag+Dlt645_Read_ID0] == 0x00)&&(recvBuf[start_flag+Dlt645_Read_ID1] == 0x02)&&(recvBuf[start_flag+Dlt645_Read_ID2] == 0x00)&&(recvBuf[start_flag+Dlt645_Read_ID3] == 0x02)){//标识符正确
-
-	       	*Output_voltage = (bcd_to_int_1byte(recvBuf[start_flag + Dlt645_Read_ID3 + 4]&0x7F)*1000000 + \
-					                 bcd_to_int_1byte(recvBuf[start_flag + Dlt645_Read_ID3 + 3])*10000 + \
-					                 bcd_to_int_1byte(recvBuf[start_flag + Dlt645_Read_ID3 + 2])*100 + \
-					                 bcd_to_int_1byte(recvBuf[start_flag + Dlt645_Read_ID3 + 1]));
-													 
-//			printf("meter_now_Valley_KWH xxxxxxxxxxxxxxxxxxxxxx= %d \n", *meter_now_Valley_KWH);
-
-					return (0);//抄收数据正确
-				}
-			}
-		}
-	}
-
-	return (-1);
-}
-
-//读电表电流 
-static int curt_read(UINT32 *Output_current, int fd, unsigned char *addr)
-{
-	int i=0,j=0,start_flag=0;
-	int Count,status;
-
-	unsigned char SentBuf[MAX_MODBUS_FRAMESIZE];
-	unsigned char recvBuf[MAX_MODBUS_FRAMESIZE];
- 
-	SentBuf[0] = 0xFE;
-	SentBuf[1] = 0xFE;
-	SentBuf[2] = 0xFE;
-	SentBuf[3] = 0xFE;
-  Mt_645_2007_C_cmd[Dlt645_Read_SrcAddr + 0] = str2_to_BCD(&addr[10]); //A0
-  Mt_645_2007_C_cmd[Dlt645_Read_SrcAddr + 1] = str2_to_BCD(&addr[8]); //A1
-  Mt_645_2007_C_cmd[Dlt645_Read_SrcAddr + 2] = str2_to_BCD(&addr[6]); //A2
-  Mt_645_2007_C_cmd[Dlt645_Read_SrcAddr + 3] = str2_to_BCD(&addr[4]); //A3
-  Mt_645_2007_C_cmd[Dlt645_Read_SrcAddr + 4] = str2_to_BCD(&addr[2]); //A4
-  Mt_645_2007_C_cmd[Dlt645_Read_SrcAddr + 5] = str2_to_BCD(&addr[0]); //A5
-	
-	Mt_645_2007_C_cmd[Dlt645_Read_ID0] = 0x00;
-  Mt_645_2007_C_cmd[Dlt645_Read_ID1] = 0x01;
-  Mt_645_2007_C_cmd[Dlt645_Read_ID2] = 0x00;
-  Mt_645_2007_C_cmd[Dlt645_Read_ID3] = 0x02;
-	
-	AddSun0x33(&Mt_645_2007_C_cmd[Dlt645_Read_ID0], Mt_645_2007_C_cmd[Dlt645_Read_L], 1);//+33处理  Cost=1=+33,其它=-33
-  Mt_645_2007_C_cmd[Dlt645_Read_CS] = Meter_645_cs(&Mt_645_2007_C_cmd,(sizeof(Mt_645_2007_C_cmd)-2));	
-	memcpy(&SentBuf[4], Mt_645_2007_C_cmd, sizeof(Mt_645_2007_C_cmd));//复制表地址								
-	
-	Led_Relay_Control(6, 0);
+    
+	Led_Relay_Control(DIR_Ctl_io, COM_RS485_TX_LEVEL);
 	write(fd, SentBuf, sizeof(Mt_645_2007_C_cmd) + 4);
 	do{
 		ioctl(fd, TIOCSERGETLSR, &status);
 	} while (status!=TIOCSER_TEMT);
 	usleep(5000);
-	Led_Relay_Control(6, 1);
+	Led_Relay_Control(DIR_Ctl_io, COM_RS485_RX_LEVEL);
+	Globa->dc_meter_tx_cnt[gun_id]++;
+    Count = read_datas_tty(fd, recvBuf, 255, 1000000, 300000);
+    if(Count >= (sizeof(Mt_645_2007_C_cmd)+expected_data_bytes)){//响应可能没有0xfe引导码  +rd_data_len个字节数据
 
-	Count = read_datas_tty(fd, recvBuf, MAX_MODBUS_FRAMESIZE, 500000, 30000);
-  if(Count >= (sizeof(Mt_645_2007_C_cmd)+4)){//响应可能没有0xfe引导码  +4个字节数据
-#if METER_645_DEBUG == 1
-			printf("kwh_read recv server length = %d,data= ", Count);
-			for(j=0; j<Count; j++)printf("%02x ",recvBuf[j]);
-			printf("\n");
-#endif
-  	for(i=0;i<5;i++){
-  		if(recvBuf[i] == 0x68){
-  			start_flag = i;
-  			break;
-  		}
-  	}
+        for(i=0;i<5;i++){
+            if(recvBuf[i] == 0x68){
+                start_flag = i;
+                break;
+            }
+        }
 
-  	if(i > 4){
-  		return (-1);
-  	}
+        if(i > 4){
+            return (-1);
+        }
 
-  	if((Count-start_flag) != (sizeof(Mt_645_2007_C_cmd)+4)){
-  		return (-1);
-  	}
-		
-		if((Meter_645_cs(&recvBuf[start_flag], Count-start_flag-2)) == recvBuf[Count-2]){
-			if((recvBuf[start_flag] == 0x68)&&(recvBuf[Count-1] == 0x16)){//起始符，结束符正确
-				AddSun0x33(&recvBuf[start_flag + Dlt645_Read_ID0], 8, 2);//减33h       Cost=1=+33,其它=-33														
-				if((recvBuf[start_flag+Dlt645_Read_ID0] == 0x00)&&(recvBuf[start_flag+Dlt645_Read_ID1] == 0x01)&&(recvBuf[start_flag+Dlt645_Read_ID2] == 0x00)&&(recvBuf[start_flag+Dlt645_Read_ID3] == 0x02)){//标识符正确
-	       	*Output_current = (bcd_to_int_1byte(recvBuf[start_flag + Dlt645_Read_ID3 + 4]&0x7F)*1000000 + \
-					                 bcd_to_int_1byte(recvBuf[start_flag + Dlt645_Read_ID3 + 3])*10000 + \
-					                 bcd_to_int_1byte(recvBuf[start_flag + Dlt645_Read_ID3 + 2])*100 + \
-					                 bcd_to_int_1byte(recvBuf[start_flag + Dlt645_Read_ID3 + 1]))/10;
-													 
-			  //printf("MEter Output_current xxxxxxxxxxxxxxxxxxxxxx= %d \n", *Output_current);
+        if((Count-start_flag) != (sizeof(Mt_645_2007_C_cmd)+expected_data_bytes)){
+            return (-1);
+        }
 
-					return (0);//抄收数据正确
+        if((Meter_645_cs(&recvBuf[start_flag], Count-start_flag-2)) == recvBuf[Count-2]){
+            if((recvBuf[start_flag] == 0x68)&&(recvBuf[Count-1] == 0x16)){//起始符，结束符正确
+				rd_data_len = recvBuf[start_flag + Dlt645_Read_L];
+				if(rd_data_len ==  (4+expected_data_bytes) )//长度正确
+				{
+					AddSub0x33(&recvBuf[start_flag + Dlt645_Read_ID0], rd_data_len, 2);//减33h       Cost=1=+33,其它=-33
+					if((recvBuf[start_flag+Dlt645_Read_ID0] == READ_DI0)&&(recvBuf[start_flag+Dlt645_Read_ID1] == READ_DI1)&&(recvBuf[start_flag+Dlt645_Read_ID2] == READ_DI2)&&(recvBuf[start_flag+Dlt645_Read_ID3] == READ_DI3)){//标识符正确
+
+						*Output_current = (bcd_to_int_1byte(recvBuf[start_flag + Dlt645_Read_ID3 + 4]&0x7F)*1000000 + \
+								bcd_to_int_1byte(recvBuf[start_flag + Dlt645_Read_ID3 + 3])*10000 + \
+								bcd_to_int_1byte(recvBuf[start_flag + Dlt645_Read_ID3 + 2])*100 + \
+								bcd_to_int_1byte(recvBuf[start_flag + Dlt645_Read_ID3 + 1]));
+
+						Globa->dc_meter_rx_ok_cnt[gun_id]++;
+						return (0);//抄收数据正确
+					}
 				}
-			}
-		}
-	}
-	return (-1);
+            }
+        }
+    }
+
+    return (-1);
 }
 
-//下发充直流分流器参数Dc_shunt_Set_meter_flag ---待定
-static int Dc_shunt_Set_meter(UINT32 DC_Shunt_Range, int fd, unsigned char *addr, int gun)
+
+//下发充直流分流器参数
+static int Dc_shunt_Set_meter(UINT32 DC_Shunt_Range, int fd, unsigned char *addr, int gun,int DIR_Ctl_io)
 {
 	int i=0,start_flag=0;
 	int Count,status;
@@ -797,42 +481,53 @@ static int Dc_shunt_Set_meter(UINT32 DC_Shunt_Range, int fd, unsigned char *addr
 
 	SentBuf[24] = Meter_645_cs(&SentBuf[4],20);	
 	SentBuf[25] = 0x16;	
-	Led_Relay_Control(6, 0);
+	
+	Led_Relay_Control(DIR_Ctl_io, COM_RS485_TX_LEVEL);
 	write(fd, SentBuf, 26);
 	do{
 		ioctl(fd, TIOCSERGETLSR, &status);
 	} while (status!=TIOCSER_TEMT);
 	usleep(5000);
-	Led_Relay_Control(6, 1);
+	Led_Relay_Control(DIR_Ctl_io, COM_RS485_RX_LEVEL);
 
-	Count = read_datas_tty(fd, recvBuf, MAX_MODBUS_FRAMESIZE, 500000, 30000);
-  if(Count >= 16){//响应可能没有0xfe引导码
-  	for(i=0;i<5;i++){
-  		if(recvBuf[i] == 0x68){
-  			start_flag = i;
-  			break;
-  		}
-  	}
+	Count = read_datas_tty(fd, recvBuf, MAX_MODBUS_FRAMESIZE, 1000000, 500000);
+	/////////////////////////////////////////////////////////////////////
+	//debug
+	printf("meter%d Dc_shunt_Set_meter read %d bytes\n",gun-1,Count);
+	for(i=0;i<Count;i++)
+		printf("%02x ",recvBuf[i]);//fe fe fe fe 68 91 44 40 01 30 16 68 84 00 b0 16
+	printf("\n");
+	///////////////////////////////////////////////////////////////////
+	if(Count >= 12)//16)
+	{//响应可能没有0xfe引导码
+		for(i=0;i<5;i++)
+		{
+			if(recvBuf[i] == 0x68)
+			{
+				start_flag = i;
+				break;
+			}
+		}
 
-  	if(i > 4){
-  		return (-1);
-  	}
+		if(i > 4)
+		{
+			return (-1);
+		}
 
-  	if((Count-start_flag) != 16){
-  		return (-1);
-  	}
+		// if((Count-start_flag) != 12)//190604//16)
+		// {
+			// return (-1);
+		// }
 
-		if((Meter_645_cs(&recvBuf[start_flag], Count-start_flag-2)) == recvBuf[Count-2]){
-			if((recvBuf[start_flag] == 0x68)&&(recvBuf[Count-1] == 0x16)){//起始符，结束符正确
-	      if(gun == 1){
-					Dc_shunt_Set_meter_flag_1 = 0;
-				}else{
-					Dc_shunt_Set_meter_flag_2 = 0;
-				}
+		if((Meter_645_cs(&recvBuf[start_flag], Count-start_flag-2)) == recvBuf[Count-2])
+		{
+			if((recvBuf[start_flag] == 0x68)&&(recvBuf[Count-1] == 0x16))
+			{//起始符，结束符正确
+				Dc_shunt_Set_meter_done_flag[gun-1] = 1;
+				printf("Dc_shunt_Set_meter_done_flag[%d] = 1\n",gun-1);//test
 			}
 		}
 	}
-
 	return (-1);
 }
 
@@ -842,191 +537,170 @@ static int Dc_shunt_Set_meter(UINT32 DC_Shunt_Range, int fd, unsigned char *addr
 ***parameter  :none
 ***return		  :none
 **********************************************************/
-static void Meter_Read_Write_Task(void)
+static void Meter_Read_Write_Task(void* para)
 {
 	int fd, Ret = 0;
-
-  UINT32 meter_connect1 = 0;
-  UINT32 meter_connect_count1 = 0;
-
-  UINT32 meter_connect2 = 0;
-  UINT32 meter_connect_count2 = 0;
-
+	int DIR_Ctl_io = COM3_DIR_IO;//IO换向
+	int i=0,j;
+	UINT32 meter_connect[CONTROL_DC_NUMBER];
+	UINT32 meter_connect_count[CONTROL_DC_NUMBER];
+	UINT32 s_count[CONTROL_DC_NUMBER];//test
 	UINT32 Output_voltage = 0;				//充电机输出电压 0.001V
 	UINT32 Output_current = 0;				//充电机输出电流 0.001A
-	UINT32 meter_now_KWH = 0;					//充电机输出电流 0.01kwh
-	UINT32 meter_Current_A = 0,meter_Current_V = 0;       //电表读取电流
-	fd = OpenDev(METER_COM_ID);
-	if(fd == -1) {
+	UINT32 meter_now_KWH = 0;				//电表电能 0.01kwh
+	
+	UINT32 gun_config = CONTROL_DC_NUMBER;
+	unsigned char Power_meter_addr[CONTROL_DC_NUMBER][12];
+	Com_run_para  com_thread_para = *((Com_run_para*)para);
+	if( SYS_COM3 == com_thread_para.com_id)
+		DIR_Ctl_io = COM3_DIR_IO;	
+	if( SYS_COM4 == com_thread_para.com_id)
+		DIR_Ctl_io = COM4_DIR_IO;	
+	if( SYS_COM5 == com_thread_para.com_id)
+		DIR_Ctl_io = COM5_DIR_IO;	
+	if( SYS_COM6 == com_thread_para.com_id)
+		DIR_Ctl_io = COM6_DIR_IO;	
+	
+	fd = OpenDev(com_thread_para.com_dev_name);
+	if(fd == -1) 
+	{
 		while(1);
-	}else{
-		set_speed(fd, 9600);
-		set_Parity(fd, 8, 1, 2);//偶校验
+	}else
+	{
+		set_speed(fd, com_thread_para.com_baud);
+		//set_Parity(fd, 8, 1, 2);//偶校验
+		set_Parity(fd, com_thread_para.com_data_bits, com_thread_para.com_stop_bits, com_thread_para.even_odd);//偶校验
 		close(fd);
-  }
-	fd = OpenDev(METER_COM_ID);
-	if(fd == -1) {
+	}
+	fd = OpenDev(com_thread_para.com_dev_name);
+	if(fd == -1) 
+	{
 		while(1);
 	}
-	prctl(PR_SET_NAME,(unsigned long)"DC_meter2007_Task");//设置线程名字 
-
-	while(1){
+	prctl(PR_SET_NAME,(unsigned long)"DCM_07_Task");//设置线程名字 
+	for(i=0;i<CONTROL_DC_NUMBER;i++)
+	{
+		meter_connect[i] = 0;
+		meter_connect_count[i] = 0;
+		s_count[i] = 0;
+	}
+		
+	while(1)
+	{
 		usleep(100000);//100ms    500K 7-8秒一度电
 		Meter_Read_Write_Watchdog = 1;
-
-		meter_connect1 = 0;
-		meter_connect2 = 0;
-    if(Globa_1->Charger_param.System_Type != 3){//不是壁挂的
-		//--------------------------- 1号电表 ------------------------------------
-			if(Globa_1->Charger_param.meter_config_flag == 2)	
+		
+    
+		gun_config = Globa->Charger_param.gun_config;
+		if(gun_config > CONTROL_DC_NUMBER)
+			gun_config = CONTROL_DC_NUMBER;
+		
+		for(i=0;i<gun_config;i++)
+			memcpy(Power_meter_addr[i],Globa->Charger_param.Power_meter_addr[i],12);		
+		
+		
+		
+		for(i=0;i<gun_config;i++)
+		{
+			meter_connect[i] = 0;
+			if(Globa->Charger_param.meter_config_flag == DCM3366Q)
 			{
-  		  Ret = All_kwh_read_New(&meter_now_KWH, fd, &Globa_1->Charger_param.Power_meter_addr1[0]);//读电量，3位小数
-			}else{
-			  Ret = All_kwh_read(&meter_now_KWH, fd, &Globa_1->Charger_param.Power_meter_addr1[0]);//读电量	
-			}
-  		if(Ret == -1){
-  		}else if(Ret == 0){
-      	meter_connect1 = 1;
-				Globa_1->meter_KWH = meter_now_KWH;
-	    	if(Globa_1->Charger_param.System_Type == 1){//单枪或者轮流充电
-				  Globa_2->meter_KWH = meter_now_KWH;
-				}
-  		}
-			usleep(100000);//100ms
-			Ret = curt_read(&meter_Current_A, fd, &Globa_1->Charger_param.Power_meter_addr1[0]);//读电流
-			if(Ret == -1){
-  		}else if(Ret == 0){
-      	meter_connect1 = 1;
-				Globa_1->meter_Current_A = meter_Current_A;
-	    	if(Globa_1->Charger_param.System_Type == 1){//单枪或者轮流充电
-				  Globa_2->meter_Current_A = meter_Current_A;
-				}
-  		}
-		/*	usleep(100000);//100ms
-			Ret = volt_read(&meter_Current_V, fd, &Globa_1->Charger_param.Power_meter_addr1[0]);//读电流
-			if(Ret == -1){
-			}else if(Ret == 0){
-				meter_connect1 = 1;
-				Globa_1->meter_Current_V = meter_Current_V;
-				if(Globa_1->Charger_param.System_Type == 1){//双枪同时充电的时候才需要
-			    Globa_2->meter_Current_V = meter_Current_V;
-				}
-			}*/
-			if(Globa_1->Charger_param.meter_config_flag == 1)	
-			{
-				if(Dc_shunt_Set_meter_flag_1 == 1){ //下发电表分流器量程
-					Dc_shunt_Set_meter(Globa_1->Charger_param.DC_Shunt_Range, fd, &Globa_1->Charger_param.Power_meter_addr1[0], 1);
-					usleep(200000);//200ms
-					if((Globa_1->Charger_param.System_Type == 0)||(Globa_1->Charger_param.System_Type == 4)){//同时充电
-						Dc_shunt_Set_meter(Globa_2->Charger_param.DC_Shunt_Range, fd, &Globa_2->Charger_param.Power_meter_addr2[0], 2);
-						usleep(200000);//200ms
-					}
-				}
-			}else{
-				Dc_shunt_Set_meter_flag_1 = 0;
-			}
-
-  		if(meter_connect1 == 0){
-  			meter_connect_count1++;
-  			if(meter_connect_count1 >= 10){
-  				meter_connect_count1 = 0;
-  				if(Globa_1->Error.meter_connect_lost == 0){
-  					Globa_1->Error.meter_connect_lost = 1;
-						
-						if((Globa_1->Charger_param.System_Type == 0 )||(Globa_1->Charger_param.System_Type == 4)){
-							sent_warning_message(0x99, 54, 1, 0);
-						}else{
-							sent_warning_message(0x99, 54, 0, 0);
-						}
-  					Globa_1->Error_system++;
-						if(Globa_1->Charger_param.System_Type == 1){//单枪或者轮流充电
-							Globa_2->Error_system++;
-						}
-  				}
-  			}
-  		}else{
-  			meter_connect_count1 = 0;
-  			if(Globa_1->Error.meter_connect_lost == 1){
-  				Globa_1->Error.meter_connect_lost = 0;
-					if((Globa_1->Charger_param.System_Type == 0)||(Globa_1->Charger_param.System_Type == 4)){
-						sent_warning_message(0x98, 54, 1, 0);
-					}else{
-						sent_warning_message(0x98, 54, 0, 0);
-					}
-  				Globa_1->Error_system--;
-					if(Globa_1->Charger_param.System_Type == 1){//单枪或者轮流充电
-						Globa_2->Error_system--;
-					}
-  			}
-  		}
-		  
-			if((Globa_1->Charger_param.System_Type == 0 )||(Globa_1->Charger_param.System_Type == 4 )){//双枪的时候{//双枪同时充电的时候才需要
-				//--------------------------- 2号电表 ------------------------------------
-				if(Globa_1->Charger_param.meter_config_flag == 2)	
+				Ret = All_kwh_read(&meter_now_KWH, fd, Power_meter_addr[i],i,DIR_Ctl_io);//读电量
+				if(Ret == -1)
 				{
-					Ret = All_kwh_read_New(&meter_now_KWH, fd, &Globa_2->Charger_param.Power_meter_addr2[0]);//读电量，3位小数
-				}else{
-					Ret = All_kwh_read(&meter_now_KWH, fd, &Globa_2->Charger_param.Power_meter_addr2[0]);//读电量	
+				}else if(Ret == 0)
+				{
+					meter_connect[i] = 1;
+					Globa->Control_DC_Infor_Data[i].meter_KWH = meter_now_KWH*METER_READ_MULTIPLE;// + s_count[i]*500;//test每次加1度 .精确到3位小数
+					Globa->Control_DC_Infor_Data[i].meter_KWH_update_flag = 1;
+					s_count[i]++;//test
+					//printf("Globa[%d]->meter_KWH = %d.%d kwh\n",i,meter_now_KWH/100,meter_now_KWH%100);
 				}
-				
-				//Ret = All_kwh_read(&meter_now_KWH, fd, &Globa_2->Charger_param.Power_meter_addr2[0]);//读电量
-				if(Ret == -1){
-				}else if(Ret == 0){
-					meter_connect2 = 1;
-					Globa_2->meter_KWH = meter_now_KWH;
+			}else{
+				Ret = All_kwh_read_New(&meter_now_KWH, fd, Power_meter_addr[i],i,DIR_Ctl_io);//读电量
+				if(Ret == -1)
+				{
+				}else if(Ret == 0)
+				{
+					meter_connect[i] = 1;
+					Globa->Control_DC_Infor_Data[i].meter_KWH = meter_now_KWH;//精确到3位小数
+					Globa->Control_DC_Infor_Data[i].meter_KWH_update_flag = 1;
+					s_count[i]++;//test
+					printf("Globa[%d]->meter_KWH = %d.%d kwh\n",i,meter_now_KWH/1000,meter_now_KWH%1000);
 				}
-
-				usleep(100000);//100ms
+			}
 			
-  			Ret = curt_read(&meter_Current_A, fd, &Globa_2->Charger_param.Power_meter_addr2[0]);//读电流
-				if(Ret == -1){
-				}else if(Ret == 0){
-					meter_connect2 = 1;
-					Globa_2->meter_Current_A = meter_Current_A;
-				}
-			/*	usleep(100000);//100ms
-				Ret = volt_read(&meter_Current_V, fd, &Globa_2->Charger_param.Power_meter_addr2[0]);//读电流
-				if(Ret == -1){
-				}else if(Ret == 0){
-					meter_connect2 = 1;
-					Globa_2->meter_Current_V = meter_Current_V;
-				}*/
-		    if(Globa_1->Charger_param.meter_config_flag == 1)	
-				{
-					
-					if(Dc_shunt_Set_meter_flag_2 == 1){ //下发电表分流器量程
-						Dc_shunt_Set_meter(Globa_1->Charger_param.DC_Shunt_Range, fd, &Globa_1->Charger_param.Power_meter_addr1[0], 1);
-						usleep(200000);//200ms
-						Dc_shunt_Set_meter(Globa_2->Charger_param.DC_Shunt_Range, fd, &Globa_2->Charger_param.Power_meter_addr2[0], 2);
-						usleep(200000);//200ms
-					}
-			  }else{
-					Dc_shunt_Set_meter_flag_2 = 0;
-				}
-
-				if(meter_connect2 == 0){
-					meter_connect_count2++;
-					if(meter_connect_count2 >= 10){
-						meter_connect_count2 = 0;
-						if(Globa_2->Error.meter_connect_lost == 0){
-							Globa_2->Error.meter_connect_lost = 1;
-							sent_warning_message(0x99, 54, 2, 0);
-							Globa_2->Error_system++;
-						}
-					} 
-				}else{
-					meter_connect_count2 = 0;
-					if(Globa_2->Error.meter_connect_lost == 1){
-						Globa_2->Error.meter_connect_lost = 0;
-						sent_warning_message(0x98, 54, 2, 0);
-						Globa_2->Error_system--;
-					}
-				}
-	    }
-		}else{
-			sleep(5);
+			Ret = Curt_read(&Output_current, fd, Power_meter_addr[i],i,DIR_Ctl_io);
+			if(Ret == -1)
+			{
+			}else if(Ret == 0)
+			{
+				if(Globa->Charger_param.meter_config_flag == DCM3366Q)
+					meter_connect[i] = 1;
+				
+				Globa->Control_DC_Infor_Data[i].meter_current = Output_current/10;//0.001A
+				Globa->Control_DC_Infor_Data[i].meter_current_update_flag = 1;
+			}
+			
+			Ret = Volt_read(&Output_voltage, fd, Power_meter_addr[i],i,DIR_Ctl_io);
+			if(Ret == -1)
+			{
+			}else if(Ret == 0)
+			{
+				meter_connect[i] = 1;
+				Globa->Control_DC_Infor_Data[i].meter_voltage = Output_voltage/10;//	0.001v 
+				Globa->Control_DC_Infor_Data[i].meter_voltage_update_flag = 1;
+			}
+			
+			usleep(200000);//200ms
 		}
-  }
+
+		if(Globa->Charger_param.meter_config_flag == DCM3366Q)//三位小数的不进行分类器设置
+		{
+			for(i=0;i<gun_config;i++)
+			{
+				if(Dc_shunt_Set_meter_flag[i] == 1)//下发电表分流器量程
+				{
+					Dc_shunt_Set_meter_done_flag[i] = 0;//clear
+					if(-1 == Dc_shunt_Set_meter(Globa->Charger_param.DC_Shunt_Range[i], fd, Power_meter_addr[i],i+1,DIR_Ctl_io))//失败
+						Dc_shunt_Set_meter_flag[i] = 0;//失败后clear
+					
+					if(Dc_shunt_Set_meter_done_flag[i])//下发成功
+						Dc_shunt_Set_meter_flag[i] = 0;//clear
+				}
+			}
+		}
+		
+		
+		for(i=0;i<gun_config;i++)
+		{
+			if(meter_connect[i] == 0)
+			{
+				meter_connect_count[i]++;
+				if(meter_connect_count[i] >= 10)
+				{
+					meter_connect_count[i] = 0;
+					if(Globa->Control_DC_Infor_Data[i].Error.meter_connect_lost == 0)
+					{
+						Globa->Control_DC_Infor_Data[i].Error.meter_connect_lost = 1;							
+						sent_warning_message(0x99, 54, i+1, 0);//i+1为枪号						
+						Globa->Control_DC_Infor_Data[i].Error_system++;
+					}
+				}
+			}
+			else//ok
+			{
+				meter_connect_count[i] = 0;
+				if(Globa->Control_DC_Infor_Data[i].Error.meter_connect_lost == 1)
+				{
+					Globa->Control_DC_Infor_Data[i].Error.meter_connect_lost = 0;
+					sent_warning_message(0x98, 54, i+1, 0);	//i+1为枪号					
+					Globa->Control_DC_Infor_Data[i].Error_system--;						
+				}
+			}
+		}
+		
+	}
 }
 
 /*********************************************************
@@ -1034,7 +708,7 @@ static void Meter_Read_Write_Task(void)
 ***parameter  :none
 ***return		  :none
 **********************************************************/
-extern void DC_2007Meter_Read_Write_Thread(void)
+extern void DC_2007Meter_Read_Write_Thread(void* para)
 {
 	pthread_t td1;
 	int ret ,stacksize = 1024*1024;
@@ -1049,7 +723,7 @@ extern void DC_2007Meter_Read_Write_Thread(void)
 		return;
 	
 	/* 创建自动串口抄收线程 */
-	if(0 != pthread_create(&td1, &attr, (void *)Meter_Read_Write_Task, NULL)){
+	if(0 != pthread_create(&td1, &attr, (void *)Meter_Read_Write_Task, para)){
 		perror("####pthread_create IC_Read_Write_Task ERROR ####\n\n");
 	}
 

@@ -114,6 +114,8 @@
 #define MSG_QUEUE_KEY_SDOG  0x200
 #define MSG_QUEUE_KEY_COLLECTION 0x201
 #define USB_PATH "/media/usb"
+#define F_LOG_PATH "/home/root/log"
+
 #define BATTERY_LOG_FILE    "/home/root/log/bat.log"
 #define DEBUG_LOG_FILE      "/home/root/log/debug.log"
 #define EAST_LOG_FILE       "/home/root/log/EAST.log"  // 日志文件,
@@ -121,16 +123,26 @@
 #define TCPMODBUS_LOG_FILE  "/home/root/log/TcpModbus.log"
 #define CONTROL_LOG_FILE    "/home/root/log/control.log"  // 日志文件,
 
-#define RUN_GUN1_LOG_FILE      "/home/root/log/RunGun1.log"  //运行1号枪信息
-#define RUN_GUN2_LOG_FILE      "/home/root/log/RunGun2.log"  //运行2号枪信息
+#define RUN_GUN1_LOG_FILE      "/home/root/log/Run_gun1.log"  //运行1号枪信息
+#define RUN_GUN2_LOG_FILE      "/home/root/log/Run_gun2.log"  //运行2号枪信息
 #define GLOBA_RUN_LOG_FILE     "/home/root/log/GlobaRun.log" //全局运行信息
-#define CARD_RUN_LOG_FILE     "/home/root/log/CardRun.log" //全局运行信息
+#define CARD_RUN_LOG_FILE     "/home/root/log/Card_Run.log" //全局运行信息
 
-#define COMM_RUN_LOG_FILE     "/home/root/log/CommRun.log" //与后台交互运行信息
-#define RUN_EVENT_1_LOG_FILE  "/home/root/log/RunEv1.log" //与后台交互运行信息
-#define RUN_EVENT_2_LOG_FILE  "/home/root/log/RunEv2.log" //与后台交互运行信息
+#define RUNGUN1_LOG_FILE      "/home/root/log/Rungun1.log"  //运行1号枪信息
+#define RUNGUN2_LOG_FILE      "/home/root/log/Rungun2.log"  //运行2号枪信息
+#define RUNGUN3_LOG_FILE      "/home/root/log/Rungun3.log"  //运行3号枪信息
+#define RUNGUN4_LOG_FILE      "/home/root/log/Rungun4.log"  //运行4号枪信息
+#define RUNGUN5_LOG_FILE      "/home/root/log/Rungun5.log"  //运行5号枪信息
 
-#define CARLOCK_RUN_LOG_FILE  "/home/root/log/CARLOCK.log" //与后台交互运行信息
+#define RUNGUN1_ErrLOG_FILE      "/home/root/log/RgunEr1.log"  //运行1号枪信息
+#define RUNGUN2_ErrLOG_FILE      "/home/root/log/RgunEr2.log"  //运行2号枪信息
+#define RUNGUN3_ErrLOG_FILE      "/home/root/log/RgunEr3.log"  //运行3号枪信息
+#define RUNGUN4_ErrLOG_FILE      "/home/root/log/RgunEr4.log"  //运行4号枪信息
+#define RUNGUN5_ErrLOG_FILE      "/home/root/log/RgunEr5.log"  //运行5号枪信息--重大异常现象
+
+#define POWER_PROCES_LOG_FILE  "/home/root/log/PowerP" //功率分配处理任务，+_zu.log
+#define CHARGE_PROCES_LOG_FILE  "/home/root/log/ChargP" //充电服务数据 +_gun.log
+#define RUNEVENT_LOG_FILE        "/home/root/log/McRun"  //mc 数据 +_gun.log
 
 #define MAXLINELEN 4096             // LogOut一行数据最大长度
 #define APP_LOG_MAX_SIZE 512*1024
